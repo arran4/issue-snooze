@@ -1,4 +1,4 @@
-package main
+package snoozebot
 
 import (
 	"context"
@@ -125,7 +125,7 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent) {
 	}
 }
 
-func main() {
+func RunDaemon() {
 	cfg := loadConfig()
 
 	// Initialize GitHub client
