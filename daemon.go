@@ -136,7 +136,9 @@ func RunDaemon() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	app := &App{
 		Config: cfg,

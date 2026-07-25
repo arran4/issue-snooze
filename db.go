@@ -64,7 +64,9 @@ func GetExpiredSnoozes(db *sql.DB, now time.Time) ([]SnoozeRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var expired []SnoozeRecord
 	for rows.Next() {
