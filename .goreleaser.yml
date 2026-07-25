@@ -1,0 +1,27 @@
+project_name: snooze-bot
+
+builds:
+  - id: linux-amd64
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+    goarch:
+      - amd64
+  - id: linux-arm64
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+    goos:
+      - linux
+    goarch:
+      - arm64
+
+dockers:
+  - image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY }}:{{ .Tag }}"
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY }}:latest"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64,linux/arm64"
