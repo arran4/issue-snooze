@@ -1,3 +1,4 @@
+version: 2
 project_name: snooze-bot
 
 builds:
@@ -19,14 +20,16 @@ builds:
     goarch:
       - arm64
 
-dockers:
-  - image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY }}:{{ .Tag }}"
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY }}:latest"
+dockers_v2:
+  - images:
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY }}"
+    tags:
+      - "{{ .Tag }}"
+      - "latest"
     dockerfile: Dockerfile.goreleaser
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64,linux/arm64"
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 nfpms:
   - id: linux-packages

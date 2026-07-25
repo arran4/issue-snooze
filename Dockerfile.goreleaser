@@ -7,5 +7,6 @@ ENV BOT_COMMAND=@snooze
 ENV PORT=8080
 ENV DATABASE_FILE=/data/snooze.db
 
-COPY snooze-bot /usr/local/bin/snooze-bot
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/snooze-bot /usr/local/bin/snooze-bot
 ENTRYPOINT ["/usr/local/bin/snooze-bot"]
