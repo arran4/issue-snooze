@@ -34,22 +34,28 @@ func loadConfig() Config {
 	return cfg
 }
 
+// Make OS interactions mockable for tests
+var (
+	lookupEnv = os.LookupEnv
+	readFile  = os.ReadFile
+)
+
 func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
+	if value, exists := lookupEnv(key); exists {
 		return value
 	}
 	return fallback
 }
 
 func getEnvOrSecret(fileKey, envKey, fallback string) string {
-	if filePath, exists := os.LookupEnv(fileKey); exists {
-		content, err := os.ReadFile(filePath)
+	if filePath, exists := lookupEnv(fileKey); exists {
+		content, err := readFile(filePath)
 		if err == nil {
 			return strings.TrimSpace(string(content))
 		}
 		log.Printf("Failed to read secret file %s: %v", filePath, err)
 	}
-	if value, exists := os.LookupEnv(envKey); exists {
+	if value, exists := lookupEnv(envKey); exists {
 		return value
 	}
 	return fallback

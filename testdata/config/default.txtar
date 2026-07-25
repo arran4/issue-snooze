@@ -1,0 +1,10 @@
+test: empty env uses defaults
+-- env --
+-- expected.json --
+{
+    "GitHubToken": "",
+    "WebhookSecret": "",
+    "BotCommand": "@snooze",
+    "Port": "8080",
+    "DatabaseFile": "snooze.db"
+}
