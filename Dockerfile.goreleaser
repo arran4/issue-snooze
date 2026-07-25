@@ -1,0 +1,11 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata sqlite3 libsqlite3-0 && rm -rf /var/lib/apt/lists/*
+
+ENV GITHUB_TOKEN_FILE=/run/secrets/github_token
+ENV WEBHOOK_SECRET_FILE=/run/secrets/webhook_secret
+ENV BOT_COMMAND=@snooze
+ENV PORT=8080
+ENV DATABASE_FILE=/data/snooze.db
+
+COPY snooze-bot /usr/local/bin/snooze-bot
+ENTRYPOINT ["/usr/local/bin/snooze-bot"]

@@ -1,0 +1,5 @@
+GITHUB_TOKEN=your_github_token
+WEBHOOK_SECRET=your_webhook_secret
+BOT_COMMAND=@snooze
+PORT=8080
+DATABASE_FILE=snooze.db

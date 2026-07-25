@@ -1,0 +1,15 @@
+test: custom env overrides
+-- env --
+GITHUB_TOKEN=test-token
+WEBHOOK_SECRET=test-secret
+BOT_COMMAND=@bot
+PORT=9090
+DATABASE_FILE=/data/mydb.sqlite
+-- expected.json --
+{
+    "GitHubToken": "test-token",
+    "WebhookSecret": "test-secret",
+    "BotCommand": "@bot",
+    "Port": "9090",
+    "DatabaseFile": "/data/mydb.sqlite"
+}
