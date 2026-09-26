@@ -20,3 +20,23 @@ func TestRoot_Execute(t *testing.T) {
 	}
 
 }
+
+func TestRoot_ExecuteHelpAndUnknownFlags(t *testing.T) {
+	cmd, err := NewRoot("test", "", "", "")
+	if err != nil {
+		t.Fatalf("Failed to create root command: %v", err)
+	}
+
+	if err := cmd.Execute([]string{"--help"}); err != nil {
+		t.Errorf("--help returned an error: %v", err)
+	}
+	if err := cmd.Execute([]string{"-h"}); err != nil {
+		t.Errorf("-h returned an error: %v", err)
+	}
+	if err := cmd.Execute([]string{"--not-a-real-flag"}); err == nil {
+		t.Error("expected an error for an unknown long flag")
+	}
+	if err := cmd.Execute([]string{"-?"}); err == nil {
+		t.Error("expected an error for an unknown short flag")
+	}
+}

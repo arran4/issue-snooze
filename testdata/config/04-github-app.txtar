@@ -1,0 +1,15 @@
+-- env --
+GITHUB_APP_ID=78910
+GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/app_key.pem
+WEBHOOK_SECRET=mysecret
+PORT=9090
+-- expected.json --
+{
+	"GitHubToken": "",
+	"GitHubAppID": 78910,
+	"GitHubAppPrivateKeyFile": "/run/secrets/app_key.pem",
+	"WebhookSecret": "mysecret",
+	"BotCommand": "@snooze",
+	"Port": "9090",
+	"DatabaseFile": "snooze.db"
+}

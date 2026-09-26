@@ -10,12 +10,13 @@ import (
 
 // SnoozeRecord represents a snooze entry in the database
 type SnoozeRecord struct {
-	ID         int
-	RepoOwner  string
-	RepoName   string
-	IssueID    int
-	Username   string
-	TargetTime time.Time
+	ID             int
+	RepoOwner      string
+	RepoName       string
+	IssueID        int
+	Username       string
+	TargetTime     time.Time
+	InstallationID int64
 }
 
 // InitDB initializes the SQLite database and creates the necessary tables
@@ -40,23 +41,27 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
+	// Migration: Add installation_id if it doesn't exist
+	// Ignore error as it fails if the column already exists
+	_, _ = db.Exec(`ALTER TABLE snoozes ADD COLUMN installation_id INTEGER DEFAULT 0`)
+
 	return db, nil
 }
 
 // InsertSnooze adds a new snooze record to the database
-func InsertSnooze(db *sql.DB, owner, repo string, issueID int, username string, targetTime time.Time) error {
+func InsertSnooze(db *sql.DB, owner, repo string, issueID int, username string, targetTime time.Time, installationID int64) error {
 	query := `
-	INSERT INTO snoozes (repo_owner, repo_name, issue_id, username, target_time)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO snoozes (repo_owner, repo_name, issue_id, username, target_time, installation_id)
+	VALUES (?, ?, ?, ?, ?, ?)
 	`
-	_, err := db.Exec(query, owner, repo, issueID, username, targetTime.UTC().Format(time.RFC3339))
+	_, err := db.Exec(query, owner, repo, issueID, username, targetTime.UTC().Format(time.RFC3339), installationID)
 	return err
 }
 
 // GetExpiredSnoozes retrieves all snooze records where the target time has passed
 func GetExpiredSnoozes(db *sql.DB, now time.Time) ([]SnoozeRecord, error) {
 	query := `
-	SELECT id, repo_owner, repo_name, issue_id, username, target_time
+	SELECT id, repo_owner, repo_name, issue_id, username, target_time, installation_id
 	FROM snoozes
 	WHERE target_time <= ?
 	`
@@ -72,9 +77,14 @@ func GetExpiredSnoozes(db *sql.DB, now time.Time) ([]SnoozeRecord, error) {
 	for rows.Next() {
 		var r SnoozeRecord
 		var targetTimeStr string
-		err := rows.Scan(&r.ID, &r.RepoOwner, &r.RepoName, &r.IssueID, &r.Username, &targetTimeStr)
+		var installationID sql.NullInt64
+		err := rows.Scan(&r.ID, &r.RepoOwner, &r.RepoName, &r.IssueID, &r.Username, &targetTimeStr, &installationID)
 		if err != nil {
 			return nil, err
+		}
+
+		if installationID.Valid {
+			r.InstallationID = installationID.Int64
 		}
 
 		t, err := time.Parse(time.RFC3339, targetTimeStr)

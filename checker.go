@@ -53,7 +53,11 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 
 // PostSnoozeReply posts a comment to the GitHub issue tagging the user
 func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord) error {
-	if a.Client == nil {
+	client, err := a.getClient(snooze.InstallationID)
+	if err != nil {
+		return fmt.Errorf("could not get GitHub client for reply: %w", err)
+	}
+	if client == nil {
 		return fmt.Errorf("GitHub client is not initialized")
 	}
 
@@ -62,6 +66,6 @@ func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord) error {
 		Body: &body,
 	}
 
-	_, _, err := a.Client.Issues.CreateComment(ctx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
+	_, _, err = client.Issues.CreateComment(ctx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
 	return err
 }

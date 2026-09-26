@@ -17,6 +17,13 @@ var (
 	date    = "unknown"
 )
 
+// Provenance
+var (
+	GeneratorVersion = "v0.0.30"
+	GeneratedAt      = "2026-09-26T13:11:31Z"
+	ProjectCommit    = "df1f621467fdecce3f8d289c2049ab6da07c71af"
+)
+
 func main() {
 	root, err := NewRoot("snoozebot", version, commit, date)
 	if err != nil {

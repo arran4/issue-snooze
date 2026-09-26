@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"log"
 	bot "github.com/issue-snooze/snooze-bot"
+	"log"
 )
 
 // RunBot is a subcommand `snoozebot run` -- Starts the daemon

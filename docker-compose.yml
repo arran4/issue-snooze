@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  snooze-bot:
+    image: ghcr.io/issue-snooze/snooze-bot:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ./app-private-key.pem:/run/secrets/github_app_private_key:ro
+    environment:
+      - GITHUB_APP_ID=123456
+      - GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github_app_private_key
+      - WEBHOOK_SECRET=your_webhook_secret
+      - DATABASE_FILE=/data/snooze.db
+    restart: unless-stopped

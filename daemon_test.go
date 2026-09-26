@@ -10,6 +10,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/google/go-github/v62/github"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/tools/txtar"
 )
@@ -98,4 +99,36 @@ func TestConfigTxtar(t *testing.T) {
 			assert.Equal(t, expectedConfig, cfg)
 		})
 	}
+}
+
+func TestAppGetClient(t *testing.T) {
+	// 1. Fallback to PAT if App not configured
+	app := &App{
+		Config: Config{},
+		Client: &github.Client{},
+	}
+	client, err := app.getClient(123)
+	assert.NoError(t, err)
+	assert.Equal(t, app.Client, client)
+
+	// 2. Error if nothing configured
+	app = &App{
+		Config: Config{},
+		Client: nil,
+	}
+	client, err = app.getClient(123)
+	assert.Error(t, err)
+	assert.Nil(t, client)
+
+	// 3. GitHub App logic falls through to PAT if installationID is 0
+	app = &App{
+		Config: Config{
+			GitHubAppID:             1,
+			GitHubAppPrivateKeyFile: "fake.pem",
+		},
+		Client: &github.Client{},
+	}
+	client, err = app.getClient(0)
+	assert.NoError(t, err)
+	assert.Equal(t, app.Client, client)
 }
