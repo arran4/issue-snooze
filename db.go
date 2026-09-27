@@ -38,12 +38,36 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	`
 	_, err = db.Exec(query)
 	if err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	// Migration: Add installation_id if it doesn't exist
-	// Ignore error as it fails if the column already exists
-	_, _ = db.Exec(`ALTER TABLE snoozes ADD COLUMN installation_id INTEGER DEFAULT 0`)
+	// Make the DB migration fail safely if it's a real failure
+	var exists bool
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('snoozes') WHERE name='installation_id'").Scan(&exists)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to inspect schema for migration: %w", err)
+	}
+	if !exists {
+		_, err = db.Exec(`ALTER TABLE snoozes ADD COLUMN installation_id INTEGER DEFAULT 0`)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to apply migration for installation_id: %w", err)
+		}
+	}
+
+	queryDeliveries := `
+	CREATE TABLE IF NOT EXISTS processed_deliveries (
+		delivery_id TEXT PRIMARY KEY,
+		processed_at DATETIME NOT NULL
+	);
+	`
+	_, err = db.Exec(queryDeliveries)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create processed_deliveries table: %w", err)
+	}
 
 	return db, nil
 }
@@ -100,5 +124,22 @@ func GetExpiredSnoozes(db *sql.DB, now time.Time) ([]SnoozeRecord, error) {
 func DeleteSnooze(db *sql.DB, id int) error {
 	query := `DELETE FROM snoozes WHERE id = ?`
 	_, err := db.Exec(query, id)
+	return err
+}
+
+// DeleteSnoozesByInstallation removes all snoozes associated with a specific installation ID
+func DeleteSnoozesByInstallation(db *sql.DB, installationID int64) error {
+	query := `DELETE FROM snoozes WHERE installation_id = ?`
+	_, err := db.Exec(query, installationID)
+	return err
+}
+
+// DeleteSnoozesByRepo removes all snoozes associated with a specific repository
+func DeleteSnoozesByRepo(db *sql.DB, repoFullName string) error {
+	// The DB stores repo_owner and repo_name separately.
+	// Since repoFullName is typically "owner/name", we need to delete by matching those.
+	// It's safer to just do a LIKE query or split it, but splitting is safer if we ensure it has a slash.
+	query := `DELETE FROM snoozes WHERE repo_owner || '/' || repo_name = ?`
+	_, err := db.Exec(query, repoFullName)
 	return err
 }

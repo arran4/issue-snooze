@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/issue-snooze/snooze-bot/cmd/snoozebot/templates"
+	"github.com/arran4/issue-snooze/cmd/issue-snooze/templates"
 )
 
 type Cmd interface {

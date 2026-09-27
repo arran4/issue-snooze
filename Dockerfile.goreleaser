@@ -9,4 +9,4 @@ ENV DATABASE_FILE=/data/snooze.db
 
 ARG TARGETPLATFORM
 COPY $TARGETPLATFORM/snooze-bot /usr/local/bin/snooze-bot
-ENTRYPOINT ["/usr/local/bin/snooze-bot"]
+ENTRYPOINT ["/usr/local/bin/snooze-bot", "run"]

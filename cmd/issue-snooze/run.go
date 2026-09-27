@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/issue-snooze/snooze-bot/cmd"
+	"github.com/arran4/issue-snooze/cmd"
 )
 
 var _ Cmd = (*Run)(nil)

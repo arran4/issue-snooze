@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   snooze-bot:
-    image: ghcr.io/issue-snooze/snooze-bot:latest
+    image: ghcr.io/arran4/issue-snooze:latest
     ports:
       - "8080:8080"
     volumes:

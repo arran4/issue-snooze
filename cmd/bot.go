@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	bot "github.com/issue-snooze/snooze-bot"
+	bot "github.com/arran4/issue-snooze"
 	"log"
 )
 

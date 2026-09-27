@@ -84,10 +84,14 @@ type App struct {
 	DB     *sql.DB
 }
 
-// getClient returns a GitHub client authenticated for the specific installation if possible,
-// falling back to the PAT client otherwise.
+// getClient returns a GitHub client authenticated for the specific installation if possible.
+// It explicitly enforces boundaries: App mode requests must use App credentials, and PAT is only for PAT mode.
 func (a *App) getClient(installationID int64) (*github.Client, error) {
-	if a.Config.GitHubAppID > 0 && a.Config.GitHubAppPrivateKeyFile != "" && installationID > 0 {
+	isAppMode := a.Config.GitHubAppID > 0 && a.Config.GitHubAppPrivateKeyFile != "" && a.Config.WebhookSecret != ""
+	if isAppMode {
+		if installationID <= 0 {
+			return nil, fmt.Errorf("GitHub App mode requires a valid installation ID but none was provided")
+		}
 		itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, a.Config.GitHubAppID, installationID, a.Config.GitHubAppPrivateKeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ghinstallation transport: %w", err)
@@ -95,11 +99,12 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 		return github.NewClient(&http.Client{Transport: itr}), nil
 	}
 
-	if a.Client != nil {
+	// Fallback to PAT mode ONLY if we are explicitly not in App Mode
+	if a.Config.GitHubToken != "" && a.Client != nil {
 		return a.Client, nil
 	}
 
-	return nil, fmt.Errorf("no GitHub client available (PAT not set and GitHub App not fully configured)")
+	return nil, fmt.Errorf("no valid authentication method available")
 }
 
 func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +130,8 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	deliveryID := github.DeliveryID(r)
+
 	event, err := github.ParseWebHook(github.WebHookType(r), payload)
 	if err != nil {
 		log.Printf("Error parsing webhook: %v", err)
@@ -134,15 +141,51 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch e := event.(type) {
 	case *github.IssueCommentEvent:
-		a.handleIssueComment(e)
+		a.handleIssueComment(e, deliveryID)
+	case *github.InstallationEvent:
+		a.handleInstallationEvent(e)
+	case *github.InstallationRepositoriesEvent:
+		a.handleInstallationRepositoriesEvent(e)
 	default:
-		// Not an issue comment event, ignore
+		// Not an event we process, ignore
 	}
 }
 
-func (a *App) handleIssueComment(e *github.IssueCommentEvent) {
+func (a *App) handleInstallationEvent(e *github.InstallationEvent) {
+	// Reconcile App lifecycle
+	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "suspend") {
+		log.Printf("Installation %d has been %s. Cleaning up snoozes.", e.Installation.GetID(), *e.Action)
+		err := DeleteSnoozesByInstallation(a.DB, e.Installation.GetID())
+		if err != nil {
+			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
+		}
+	}
+}
+
+func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationRepositoriesEvent) {
+	if e.Action != nil && *e.Action == "removed" {
+		for _, repo := range e.RepositoriesRemoved {
+			log.Printf("Repository %s removed from installation %d. Cleaning up snoozes.", repo.GetFullName(), e.Installation.GetID())
+			err := DeleteSnoozesByRepo(a.DB, repo.GetFullName())
+			if err != nil {
+				log.Printf("Failed to delete snoozes for removed repo %s: %v", repo.GetFullName(), err)
+			}
+		}
+	}
+}
+
+func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string) {
 	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "edited") {
 		return
+	}
+
+	// Protection against duplicate webhooks
+	if deliveryID != "" {
+		if a.isDuplicateDelivery(deliveryID) {
+			log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
+			return
+		}
+		a.markDeliveryProcessed(deliveryID)
 	}
 
 	body := e.Comment.GetBody()
@@ -174,12 +217,6 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent) {
 			return
 		}
 
-		// Protection against duplicate webhooks
-		if a.isDuplicateSnooze(e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime) {
-			log.Printf("Ignoring duplicate snooze request")
-			return
-		}
-
 		err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
 		if err != nil {
 			log.Printf("Failed to insert snooze: %v", err)
@@ -198,12 +235,6 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent) {
 		return
 	}
 
-	// Protection against duplicate webhooks
-	if a.isDuplicateSnooze(e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime) {
-		log.Printf("Ignoring duplicate snooze request")
-		return
-	}
-
 	err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
 	if err != nil {
 		log.Printf("Failed to insert snooze: %v", err)
@@ -212,19 +243,32 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent) {
 	}
 }
 
-// isDuplicateSnooze checks if a very similar snooze already exists
-func (a *App) isDuplicateSnooze(owner, repo string, issueID int, username string, targetTime time.Time) bool {
-	query := `
-	SELECT COUNT(*) FROM snoozes
-	WHERE repo_owner = ? AND repo_name = ? AND issue_id = ? AND username = ? AND ABS(strftime('%s', target_time) - strftime('%s', ?)) < 60
-	`
+// isDuplicateDelivery checks if this specific delivery has been seen
+func (a *App) isDuplicateDelivery(deliveryID string) bool {
+	if deliveryID == "" {
+		return false
+	}
+	query := `SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = ?`
 	var count int
-	err := a.DB.QueryRow(query, owner, repo, issueID, username, targetTime.UTC().Format(time.RFC3339)).Scan(&count)
+	err := a.DB.QueryRow(query, deliveryID).Scan(&count)
 	if err != nil {
-		log.Printf("Error checking for duplicate snooze: %v", err)
+		log.Printf("Error checking for duplicate delivery: %v", err)
 		return false
 	}
 	return count > 0
+}
+
+func (a *App) markDeliveryProcessed(deliveryID string) {
+	if deliveryID == "" {
+		return
+	}
+	_, err := a.DB.Exec(`INSERT INTO processed_deliveries (delivery_id, processed_at) VALUES (?, ?)`, deliveryID, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		log.Printf("Failed to record processed delivery: %v", err)
+	}
+
+	// Clean up old deliveries (e.g. older than 7 days)
+	_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
 }
 
 func RunDaemon() {

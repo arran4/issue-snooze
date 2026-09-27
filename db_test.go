@@ -11,7 +11,9 @@ import (
 
 func TestDBMigration(t *testing.T) {
 	dbFile := "test_migration.db"
-	defer os.Remove(dbFile)
+	defer func() {
+		_ = os.Remove(dbFile)
+	}()
 
 	// Phase 1: Initialize with Old Schema
 	db, err := InitDB(dbFile)
@@ -39,12 +41,14 @@ func TestDBMigration(t *testing.T) {
 	// Insert data into old schema directly
 	_, err = db.Exec("INSERT INTO snoozes (repo_owner, repo_name, issue_id, username, target_time) VALUES (?, ?, ?, ?, ?)", "owner1", "repo1", 1, "user1", time.Now().Format(time.RFC3339))
 	assert.NoError(t, err)
-	db.Close()
+	_ = db.Close()
 
 	// Phase 2: Run InitDB again to apply migration
 	db, err = InitDB(dbFile)
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Insert a new record with installationID
 	err = InsertSnooze(db, "owner2", "repo2", 2, "user2", time.Now().Add(time.Hour), 12345)

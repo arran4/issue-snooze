@@ -102,9 +102,11 @@ func TestConfigTxtar(t *testing.T) {
 }
 
 func TestAppGetClient(t *testing.T) {
-	// 1. Fallback to PAT if App not configured
+	// 1. Fallback to PAT if App not configured but PAT is configured
 	app := &App{
-		Config: Config{},
+		Config: Config{
+			GitHubToken: "secret_pat",
+		},
 		Client: &github.Client{},
 	}
 	client, err := app.getClient(123)
@@ -120,15 +122,17 @@ func TestAppGetClient(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, client)
 
-	// 3. GitHub App logic falls through to PAT if installationID is 0
+	// 3. GitHub App mode fails if installationID is 0 rather than falling back to PAT silently
 	app = &App{
 		Config: Config{
 			GitHubAppID:             1,
 			GitHubAppPrivateKeyFile: "fake.pem",
+			WebhookSecret:           "secret",
 		},
 		Client: &github.Client{},
 	}
 	client, err = app.getClient(0)
-	assert.NoError(t, err)
-	assert.Equal(t, app.Client, client)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GitHub App mode requires a valid installation ID")
+	assert.Nil(t, client)
 }

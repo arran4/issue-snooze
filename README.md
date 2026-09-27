@@ -49,7 +49,7 @@ version: '3.8'
 
 services:
   snooze-bot:
-    image: ghcr.io/issue-snooze/snooze-bot:latest
+    image: ghcr.io/arran4/issue-snooze:latest
     ports:
       - "8080:8080"
     volumes:
@@ -74,7 +74,7 @@ docker-compose up -d
 To run the daemon natively without Docker:
 
 ```bash
-go install github.com/issue-snooze/snooze-bot@latest
+go install github.com/arran4/issue-snooze@latest
 export GITHUB_APP_ID=123456
 export GITHUB_APP_PRIVATE_KEY_FILE=/path/to/key.pem
 export WEBHOOK_SECRET=mysecret
