@@ -35,10 +35,13 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 	}
 
 	for _, snooze := range expired {
+		// Update 'now' per iteration to ensure locks don't expire prematurely on long batches
+		currentNow := time.Now()
+
 		// 4. Reminder reliability/concurrency: implement a claim model.
 		// We try to claim the snooze by setting a locked_until time.
 		// If another worker has already claimed it, this will return false.
-		claimed, err := a.claimSnooze(snooze.ID, now)
+		claimed, err := a.claimSnooze(snooze.ID, currentNow)
 		if err != nil {
 			log.Printf("Failed to attempt claiming snooze ID %d: %v", snooze.ID, err)
 			continue

@@ -235,6 +235,12 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 		return
 	}
 
+	// Issue 6: Ignore bot-authored comments to avoid self/automation loops
+	if e.Comment.User != nil && e.Comment.User.GetType() == "Bot" {
+		log.Printf("Ignoring bot-authored comment")
+		return
+	}
+
 	body := e.Comment.GetBody()
 	cmd := ParseCommand(body, a.Config.BotCommand)
 	if !cmd.HasCommand {
@@ -280,18 +286,9 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 			log.Printf("Snooze inserted for %s at %v", username, targetTime)
 		}
 	} else {
-		if isAppModeConfig(a.Config) {
-			log.Printf("Rejecting webhook without delivery ID in App mode to preserve idempotency guarantees.")
-			return
-		}
-
-		// Fallback for direct invocations or PAT webhooks without delivery IDs
-		err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
-		if err != nil {
-			log.Printf("Failed to insert snooze: %v", err)
-		} else {
-			log.Printf("Snooze inserted for %s at %v", username, targetTime)
-		}
+		// Delivery ID is strongly required for actual webhooks to preserve idempotency guarantees.
+		log.Printf("Rejecting webhook without delivery ID to preserve idempotency guarantees.")
+		return
 	}
 }
 

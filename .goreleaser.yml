@@ -1,5 +1,5 @@
 version: 2
-project_name: snooze-bot
+project_name: issue-snooze
 
 builds:
   - id: linux-amd64
@@ -33,7 +33,7 @@ dockers_v2:
 
 nfpms:
   - id: linux-packages
-    package_name: snooze-bot
+    package_name: issue-snooze
     vendor: Your Org
     homepage: https://github.com/arran4/issue-snooze
     maintainer: You <you@example.com>
