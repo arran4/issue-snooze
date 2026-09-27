@@ -20,6 +20,7 @@ import (
 type Config struct {
 	GitHubToken             string
 	GitHubAppID             int64
+	GitHubAppIDRaw          string // Tracks if it was supplied but invalid
 	GitHubAppPrivateKeyFile string
 	WebhookSecret           string
 	BotCommand              string
@@ -43,6 +44,7 @@ func loadConfig() Config {
 	cfg := Config{
 		GitHubToken:             getEnvOrSecret("GITHUB_TOKEN_FILE", "GITHUB_TOKEN", ""),
 		GitHubAppID:             appID,
+		GitHubAppIDRaw:          appIDStr,
 		GitHubAppPrivateKeyFile: getEnv("GITHUB_APP_PRIVATE_KEY_FILE", ""),
 		WebhookSecret:           getEnvOrSecret("WEBHOOK_SECRET_FILE", "WEBHOOK_SECRET", ""),
 		BotCommand:              getEnv("BOT_COMMAND", "@snooze"),
@@ -99,10 +101,10 @@ func isPATModeConfig(cfg Config) bool {
 }
 
 func validateConfig(cfg Config) error {
-	if cfg.GitHubAppID == -1 {
+	if cfg.GitHubAppIDRaw != "" && cfg.GitHubAppID <= 0 {
 		return fmt.Errorf("GITHUB_APP_ID must be a valid positive integer")
 	}
-	appFieldsPresent := cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != ""
+	appFieldsPresent := cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != "" || cfg.GitHubAppIDRaw != ""
 	appMode := isAppModeConfig(cfg)
 	patMode := isPATModeConfig(cfg)
 

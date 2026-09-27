@@ -221,8 +221,21 @@ func TestAppGetClient(t *testing.T) {
 	// 4. Test validation logic blocks malformed App ID
 	app = &App{
 		Config: Config{
-			GitHubAppID: -1,
-			GitHubToken: "secret_pat",
+			GitHubAppID:    -1,
+			GitHubAppIDRaw: "bad_value",
+			GitHubToken:    "secret_pat",
+		},
+	}
+	err = validateConfig(app.Config)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GITHUB_APP_ID must be a valid positive integer")
+
+	// 5. Test validation blocks explicit 0 or negative App ID
+	app = &App{
+		Config: Config{
+			GitHubAppID:    0,
+			GitHubAppIDRaw: "0",
+			GitHubToken:    "secret_pat",
 		},
 	}
 	err = validateConfig(app.Config)

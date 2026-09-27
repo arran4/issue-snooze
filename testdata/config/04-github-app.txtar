@@ -7,6 +7,7 @@ PORT=9090
 {
 	"GitHubToken": "",
 	"GitHubAppID": 78910,
+	"GitHubAppIDRaw": "78910",
 	"GitHubAppPrivateKeyFile": "/run/secrets/app_key.pem",
 	"WebhookSecret": "mysecret",
 	"BotCommand": "@snooze",
