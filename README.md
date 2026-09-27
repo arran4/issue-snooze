@@ -8,25 +8,54 @@ This project operates primarily as a **GitHub App**. It supports multiple instal
 
 To use `issue-snooze`, you must first register it as a GitHub App on your account or organization.
 
-1. Navigate to **Settings > Developer Settings > GitHub Apps**.
-2. Click **New GitHub App**.
-3. **App name:** Give your app a unique name (e.g., `My Issue Snoozer`).
-4. **Homepage URL:** The URL of your repository or website.
-5. **Webhook URL:** The HTTPS endpoint where this daemon will be hosted (e.g., `https://bot.example.com/webhook`).
-6. **Webhook Secret:** Generate a strong random string and provide it here. You will need this for the `WEBHOOK_SECRET` configuration.
-7. **Permissions:**
+1. Navigate directly to the GitHub App registration page: [https://github.com/settings/apps/new](https://github.com/settings/apps/new).
+2. **App name:** Give your app a unique name (e.g., `My Issue Snoozer`).
+3. **Homepage URL:** The URL of your repository or website.
+4. **Webhook URL:** The HTTPS endpoint where this daemon will be hosted (e.g., `https://bot.example.com/webhook`).
+5. **Webhook Secret:** Generate a strong random string and provide it here. You will need this for the `WEBHOOK_SECRET` configuration. See "Webhook Verification" below.
+6. **Permissions:**
    - **Issues:** `Read & write` (to read comments and post replies).
    - **Pull Requests:** `Read & write` (to interact with PR comments).
-8. **Subscribe to events:**
+7. **Subscribe to events:**
    - `Issue comment`
-9. Click **Create GitHub App**.
-10. Once created, note your **App ID** near the top of the general settings page.
-11. Scroll down and click **Generate a private key**. A `.pem` file will download to your computer.
-12. Navigate to **Install App** in the left sidebar to install the App on your desired repositories.
+   - `Installation`
+   - `Installation repositories`
+   *(Note: Subscribing to Installation and Installation repositories is required so the daemon knows when it has been uninstalled or removed from a repository, allowing it to clean up old reminders).*
+8. Click **Create GitHub App**.
+9. Once created, note your **App ID** near the top of the general settings page.
+10. Scroll down and click **Generate a private key**. A `.pem` file will download to your computer. Store this securely.
+11. Navigate to **Install App** in the left sidebar to install the App on your desired repositories.
 
 ## Deployment
 
 Deploying the bot requires the credentials generated during the registration process.
+
+## Operational Guidance
+
+### Webhook Verification & Reverse Proxies
+The daemon must validate the signatures of incoming GitHub Webhooks. Do not disable or omit the `WEBHOOK_SECRET` in App Mode. The bot uses standard GitHub payload signature validation.
+Ensure you expose the bot behind an HTTPS reverse proxy (such as Nginx, Traefik, or Cloudflare Tunnels) mapping port `8080` (or your configured `PORT`) to the internet.
+
+### Secret and Key Rotation
+If you suspect your webhook secret or private key `.pem` file has been compromised:
+1. Generate a new private key or webhook secret in your GitHub App settings.
+2. Update the environment variables/secret files for your deployment.
+3. Restart the `issue-snooze` container/daemon.
+
+### Restarting, Upgrades, and Backups
+All pending snoozes are durably stored in an SQLite database (default: `snooze.db`). You can safely restart or upgrade the daemon at any time. When the application boots up, the background checker will immediately process any snoozes whose target times have passed. We strongly recommend routinely backing up your `snooze.db` file.
+
+### Troubleshooting
+Check the container logs or standard output if snoozes are not triggering. Common problems:
+- `Invalid GitHub App configuration`: Ensure `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, and `WEBHOOK_SECRET` are all populated correctly.
+- `UNIQUE constraint failed`: This is an expected log when GitHub re-delivers an identical webhook payload; the bot correctly ignores these.
+
+### Smoke Tests
+Once installed, create a test issue and a test Pull Request on a repository where the App is active.
+- Leave a comment: `@snooze in 1 minute`
+- Verify the daemon log acknowledges the snooze command.
+- Wait 1 minute.
+- Verify the bot replies tagging your username.
 
 ### Environment Variables
 
@@ -49,6 +78,10 @@ version: '3.8'
 
 services:
   snooze-bot:
+    # If a pre-built image is not published, build it locally with:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.goreleaser
     image: ghcr.io/arran4/issue-snooze:latest
     ports:
       - "8080:8080"
@@ -68,6 +101,7 @@ Run the service in the background:
 ```bash
 docker-compose up -d
 ```
+*(Note: As of writing, there may be no official pre-built image pushed to ghcr.io/arran4/issue-snooze. You can optionally build the container locally by uncommenting the `build` directives.)*
 
 ### Go Install
 
@@ -83,5 +117,7 @@ issue-snooze run
 
 ## Legacy PAT Deployment
 
-If you are not using a GitHub App, you can configure the bot with a Personal Access Token (PAT). Generate a fine-grained token with Issues/PR Read & Write access and configure your repository webhook manually.
-Then provide the `GITHUB_TOKEN` or `GITHUB_TOKEN_FILE` environment variable instead of the App ID and Private Key.
+If you are not using a GitHub App, you can configure the bot with a Personal Access Token (PAT).
+1. Generate a fine-grained PAT granting **Issues/Pull Requests (Read/Write)** access for the required repositories.
+2. Manually register a repository webhook on each repository you wish to monitor, subscribing to `Issue comment` events, pointing to your bot's HTTPS endpoint.
+3. Start the daemon using `GITHUB_TOKEN` or `GITHUB_TOKEN_FILE` instead of the App configuration variables.

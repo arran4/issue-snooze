@@ -73,14 +73,14 @@ type RootCmd struct {
 }
 
 func (c *RootCmd) Usage() {
-	err := executeUsage(os.Stderr, "snoozebot_usage.txt", UsageDataRootCmd{c, false})
+	err := executeUsage(os.Stderr, "issue-snooze_usage.txt", UsageDataRootCmd{c, false})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating usage: %s\n", err)
 	}
 }
 
 func (c *RootCmd) UsageRecursive() {
-	err := executeUsage(os.Stderr, "snoozebot_usage.txt", UsageDataRootCmd{c, true})
+	err := executeUsage(os.Stderr, "issue-snooze_usage.txt", UsageDataRootCmd{c, true})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating usage: %s\n", err)
 	}

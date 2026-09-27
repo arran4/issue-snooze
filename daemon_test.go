@@ -118,7 +118,7 @@ func TestIdempotentInsert(t *testing.T) {
 
 	db, err := InitDB(dbFile)
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	app := &App{DB: db}
 
@@ -217,4 +217,15 @@ func TestAppGetClient(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "GitHub App mode requires a valid installation ID")
 	assert.Nil(t, client)
+
+	// 4. Test validation logic blocks malformed App ID
+	app = &App{
+		Config: Config{
+			GitHubAppID: -1,
+			GitHubToken: "secret_pat",
+		},
+	}
+	err = validateConfig(app.Config)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GITHUB_APP_ID must be a valid positive integer")
 }

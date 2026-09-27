@@ -5,7 +5,7 @@ import (
 	"log"
 )
 
-// RunBot is a subcommand `snoozebot run` -- Starts the daemon
+// RunBot is a subcommand `issue-snooze run` -- Starts the daemon
 //
 // Flags:
 //

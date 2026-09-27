@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
@@ -35,6 +36,7 @@ func loadConfig() Config {
 			appID = id
 		} else {
 			log.Printf("Invalid GITHUB_APP_ID %q: %v", appIDStr, err)
+			appID = -1 // Use -1 to represent an explicitly invalid ID
 		}
 	}
 
@@ -82,6 +84,10 @@ type App struct {
 	Config Config
 	Client *github.Client // Fallback PAT client
 	DB     *sql.DB
+
+	// Cache for GitHub App transports to allow token renewal reuse
+	appTransports   map[int64]*ghinstallation.Transport
+	appTransportMux sync.Mutex
 }
 
 func isAppModeConfig(cfg Config) bool {
@@ -93,6 +99,9 @@ func isPATModeConfig(cfg Config) bool {
 }
 
 func validateConfig(cfg Config) error {
+	if cfg.GitHubAppID == -1 {
+		return fmt.Errorf("GITHUB_APP_ID must be a valid positive integer")
+	}
 	appFieldsPresent := cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != ""
 	appMode := isAppModeConfig(cfg)
 	patMode := isPATModeConfig(cfg)
@@ -120,10 +129,24 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 		if installationID <= 0 {
 			return nil, fmt.Errorf("GitHub App mode requires a valid installation ID but none was provided")
 		}
-		itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, a.Config.GitHubAppID, installationID, a.Config.GitHubAppPrivateKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ghinstallation transport: %w", err)
+
+		a.appTransportMux.Lock()
+		defer a.appTransportMux.Unlock()
+
+		if a.appTransports == nil {
+			a.appTransports = make(map[int64]*ghinstallation.Transport)
 		}
+
+		itr, ok := a.appTransports[installationID]
+		if !ok {
+			var err error
+			itr, err = ghinstallation.NewKeyFromFile(http.DefaultTransport, a.Config.GitHubAppID, installationID, a.Config.GitHubAppPrivateKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create ghinstallation transport: %w", err)
+			}
+			a.appTransports[installationID] = itr
+		}
+
 		return github.NewClient(&http.Client{Transport: itr}), nil
 	}
 
@@ -206,7 +229,7 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 }
 
 func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string) {
-	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "edited") {
+	if e.Action == nil || *e.Action != "created" {
 		return
 	}
 
@@ -255,7 +278,12 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 			log.Printf("Snooze inserted for %s at %v", username, targetTime)
 		}
 	} else {
-		// Fallback for direct invocations without webhooks (e.g., tests)
+		if isAppModeConfig(a.Config) {
+			log.Printf("Rejecting webhook without delivery ID in App mode to preserve idempotency guarantees.")
+			return
+		}
+
+		// Fallback for direct invocations or PAT webhooks without delivery IDs
 		err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
 		if err != nil {
 			log.Printf("Failed to insert snooze: %v", err)
