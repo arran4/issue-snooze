@@ -93,19 +93,21 @@ func isPATModeConfig(cfg Config) bool {
 }
 
 func validateConfig(cfg Config) error {
+	appFieldsPresent := cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != ""
 	appMode := isAppModeConfig(cfg)
 	patMode := isPATModeConfig(cfg)
 
-	if !appMode && !patMode {
-		// Are there partial App settings?
-		if cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != "" || cfg.WebhookSecret != "" {
-			return fmt.Errorf("partial GitHub App configuration detected. You must provide App ID, Private Key File, and Webhook Secret")
-		}
-		return fmt.Errorf("no valid authentication method configured")
+	if appFieldsPresent && !appMode {
+		return fmt.Errorf("partial GitHub App configuration detected. You must provide App ID, Private Key File, and Webhook Secret")
 	}
 
 	if appMode && patMode {
 		log.Printf("Both GitHub App and PAT are configured. Proceeding in App Mode exclusively.")
+		return nil
+	}
+
+	if !appMode && !patMode {
+		return fmt.Errorf("no valid authentication method configured")
 	}
 
 	return nil
@@ -205,15 +207,6 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 		return
 	}
 
-	// Protection against duplicate webhooks
-	if deliveryID != "" {
-		if a.isDuplicateDelivery(deliveryID) {
-			log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
-			return
-		}
-		a.markDeliveryProcessed(deliveryID)
-	}
-
 	body := e.Comment.GetBody()
 	cmd := ParseCommand(body, a.Config.BotCommand)
 	if !cmd.HasCommand {
@@ -293,40 +286,16 @@ func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int
 		return fmt.Errorf("failed to insert snooze inside transaction: %w", err)
 	}
 
-	// Clean up old deliveries (e.g. older than 7 days) on a background thread so we don't slow down the request
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Clean up old deliveries (e.g. older than 7 days) after successful commit
 	go func() {
 		_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
 	}()
 
-	return tx.Commit()
-}
-
-// isDuplicateDelivery checks if this specific delivery has been seen
-func (a *App) isDuplicateDelivery(deliveryID string) bool {
-	if deliveryID == "" {
-		return false
-	}
-	query := `SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = ?`
-	var count int
-	err := a.DB.QueryRow(query, deliveryID).Scan(&count)
-	if err != nil {
-		log.Printf("Error checking for duplicate delivery: %v", err)
-		return false
-	}
-	return count > 0
-}
-
-func (a *App) markDeliveryProcessed(deliveryID string) {
-	if deliveryID == "" {
-		return
-	}
-	_, err := a.DB.Exec(`INSERT INTO processed_deliveries (delivery_id, processed_at) VALUES (?, ?)`, deliveryID, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		log.Printf("Failed to record processed delivery: %v", err)
-	}
-
-	// Clean up old deliveries (e.g. older than 7 days)
-	_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
+	return nil
 }
 
 func RunDaemon() {

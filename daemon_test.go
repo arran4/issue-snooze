@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/google/go-github/v62/github"
 	"github.com/stretchr/testify/assert"
@@ -107,6 +108,32 @@ func TestConfigTxtar(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIdempotentInsert(t *testing.T) {
+	dbFile := "test_idempotent.db"
+	defer func() {
+		_ = os.Remove(dbFile)
+	}()
+
+	db, err := InitDB(dbFile)
+	assert.NoError(t, err)
+	defer db.Close()
+
+	app := &App{DB: db}
+
+	// 1. First insert should succeed
+	err = app.insertSnoozeIdempotent("delivery-123", "owner", "repo", 1, "user", time.Now(), 1)
+	assert.NoError(t, err)
+
+	// 2. Second insert with same delivery ID should fail with unique constraint error
+	err = app.insertSnoozeIdempotent("delivery-123", "owner", "repo", 2, "user", time.Now(), 1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
+
+	// 3. Rollback scenario: a failed snooze insert inside transaction shouldn't block future delivery
+	// Since we can't easily mock DB exec failure inside insertSnoozeIdempotent without a mock driver,
+	// we assume SQLite handles the transaction rollback as coded.
 }
 
 func TestAppGetClient(t *testing.T) {
