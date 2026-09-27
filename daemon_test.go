@@ -97,6 +97,14 @@ func TestConfigTxtar(t *testing.T) {
 			}
 
 			assert.Equal(t, expectedConfig, cfg)
+			err = validateConfig(cfg)
+			if expectedConfig.GitHubToken == "" && expectedConfig.GitHubAppID == 0 {
+				assert.Error(t, err)
+			} else if expectedConfig.GitHubAppID > 0 && (expectedConfig.WebhookSecret == "" || expectedConfig.GitHubAppPrivateKeyFile == "") {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

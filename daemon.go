@@ -84,11 +84,37 @@ type App struct {
 	DB     *sql.DB
 }
 
+func isAppModeConfig(cfg Config) bool {
+	return cfg.GitHubAppID > 0 && cfg.GitHubAppPrivateKeyFile != "" && cfg.WebhookSecret != ""
+}
+
+func isPATModeConfig(cfg Config) bool {
+	return cfg.GitHubToken != ""
+}
+
+func validateConfig(cfg Config) error {
+	appMode := isAppModeConfig(cfg)
+	patMode := isPATModeConfig(cfg)
+
+	if !appMode && !patMode {
+		// Are there partial App settings?
+		if cfg.GitHubAppID > 0 || cfg.GitHubAppPrivateKeyFile != "" || cfg.WebhookSecret != "" {
+			return fmt.Errorf("partial GitHub App configuration detected. You must provide App ID, Private Key File, and Webhook Secret")
+		}
+		return fmt.Errorf("no valid authentication method configured")
+	}
+
+	if appMode && patMode {
+		log.Printf("Both GitHub App and PAT are configured. Proceeding in App Mode exclusively.")
+	}
+
+	return nil
+}
+
 // getClient returns a GitHub client authenticated for the specific installation if possible.
 // It explicitly enforces boundaries: App mode requests must use App credentials, and PAT is only for PAT mode.
 func (a *App) getClient(installationID int64) (*github.Client, error) {
-	isAppMode := a.Config.GitHubAppID > 0 && a.Config.GitHubAppPrivateKeyFile != "" && a.Config.WebhookSecret != ""
-	if isAppMode {
+	if isAppModeConfig(a.Config) {
 		if installationID <= 0 {
 			return nil, fmt.Errorf("GitHub App mode requires a valid installation ID but none was provided")
 		}
@@ -100,7 +126,7 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 	}
 
 	// Fallback to PAT mode ONLY if we are explicitly not in App Mode
-	if a.Config.GitHubToken != "" && a.Client != nil {
+	if isPATModeConfig(a.Config) && a.Client != nil {
 		return a.Client, nil
 	}
 
@@ -204,25 +230,10 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 	ctx := context.Background()
 	username := e.Sender.GetLogin()
 
-	// Try to get an authenticated client for location lookup
+	// App-mode auth failure rejects command without persistence.
 	client, err := a.getClient(installationID)
 	if err != nil {
-		log.Printf("Failed to get client for location lookup: %v", err)
-		// Fallback to UTC if we can't get a client
-		loc := time.UTC
-		now := time.Now()
-		targetTime, err := ParseTargetTime(cmd.DateString, loc, now)
-		if err != nil {
-			log.Printf("Failed to parse target time: %v", err)
-			return
-		}
-
-		err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
-		if err != nil {
-			log.Printf("Failed to insert snooze: %v", err)
-		} else {
-			log.Printf("Snooze inserted for %s at %v", username, targetTime)
-		}
+		log.Printf("Failed to establish authorization for App mode processing: %v. Command rejected.", err)
 		return
 	}
 
@@ -235,12 +246,59 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 		return
 	}
 
-	err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
-	if err != nil {
-		log.Printf("Failed to insert snooze: %v", err)
+	// Webhook delivery idempotency with a transaction tied to successful handling.
+	if deliveryID != "" {
+		err = a.insertSnoozeIdempotent(deliveryID, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
+			} else {
+				log.Printf("Failed to insert snooze idempotently: %v", err)
+			}
+		} else {
+			log.Printf("Snooze inserted for %s at %v", username, targetTime)
+		}
 	} else {
-		log.Printf("Snooze inserted for %s at %v", username, targetTime)
+		// Fallback for direct invocations without webhooks (e.g., tests)
+		err = InsertSnooze(a.DB, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
+		if err != nil {
+			log.Printf("Failed to insert snooze: %v", err)
+		} else {
+			log.Printf("Snooze inserted for %s at %v", username, targetTime)
+		}
 	}
+}
+
+func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int, username string, targetTime time.Time, installationID int64) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// Try inserting the delivery marker first. If this fails, it means we already processed this delivery.
+	_, err = tx.Exec(`INSERT INTO processed_deliveries (delivery_id, processed_at) VALUES (?, ?)`, deliveryID, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("delivery marker failed: %w", err)
+	}
+
+	query := `
+	INSERT INTO snoozes (repo_owner, repo_name, issue_id, username, target_time, installation_id)
+	VALUES (?, ?, ?, ?, ?, ?)
+	`
+	_, err = tx.Exec(query, owner, repo, issueID, username, targetTime.UTC().Format(time.RFC3339), installationID)
+	if err != nil {
+		return fmt.Errorf("failed to insert snooze inside transaction: %w", err)
+	}
+
+	// Clean up old deliveries (e.g. older than 7 days) on a background thread so we don't slow down the request
+	go func() {
+		_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
+	}()
+
+	return tx.Commit()
 }
 
 // isDuplicateDelivery checks if this specific delivery has been seen
@@ -274,8 +332,15 @@ func (a *App) markDeliveryProcessed(deliveryID string) {
 func RunDaemon() {
 	cfg := loadConfig()
 
+	if err := validateConfig(cfg); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
 	// Initialize GitHub client
-	client := github.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	var client *github.Client
+	if isPATModeConfig(cfg) && !isAppModeConfig(cfg) {
+		client = github.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	}
 
 	// Initialize Database
 	db, err := InitDB(cfg.DatabaseFile)
