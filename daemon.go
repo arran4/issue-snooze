@@ -197,28 +197,38 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	case *github.IssueCommentEvent:
 		handlerErr = a.handleIssueComment(e, deliveryID)
 	case *github.InstallationEvent:
-		a.handleInstallationEvent(e)
+		handlerErr = a.handleInstallationEvent(e)
 	case *github.InstallationRepositoriesEvent:
-		a.handleInstallationRepositoriesEvent(e)
+		handlerErr = a.handleInstallationRepositoriesEvent(e)
+	case *github.RepositoryEvent:
+		handlerErr = a.handleRepositoryEvent(e)
+	case *github.InstallationTargetEvent:
+		handlerErr = a.handleInstallationTargetEvent(e)
 	default:
 		// Not an event we process, ignore
 	}
 
 	if handlerErr != nil {
-		log.Printf("Webhook handling failed (retryable): %v", handlerErr)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		if _, ok := handlerErr.(*ClientError); ok {
+			log.Printf("Webhook request malformed: %v", handlerErr)
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+		} else {
+			log.Printf("Webhook handling failed (retryable): %v", handlerErr)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func (a *App) handleInstallationEvent(e *github.InstallationEvent) {
+func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
 	// Reconcile App lifecycle
 	if e.Action != nil && *e.Action == "deleted" {
 		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", e.Installation.GetID())
 		err := DeleteSnoozesByInstallation(a.DB, e.Installation.GetID())
 		if err != nil {
 			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
+			return err
 		}
 
 		// Issue #4: Clears the cached installation transport when an installation is permanently deleted
@@ -231,9 +241,10 @@ func (a *App) handleInstallationEvent(e *github.InstallationEvent) {
 		log.Printf("Installation %d has been suspended. Snoozes will remain but will fail and retry until authorization returns.", e.Installation.GetID())
 		// Deliberately doing nothing to preserve snoozes during temporary suspension
 	}
+	return nil
 }
 
-func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationRepositoriesEvent) {
+func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationRepositoriesEvent) error {
 	if e.Action != nil && *e.Action == "removed" {
 		for _, repo := range e.RepositoriesRemoved {
 			// We restrict the deletion exclusively to the provided Installation ID mapped globally to the specific repo removal.
@@ -241,9 +252,37 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 			err := DeleteSnoozesByRepoAndInstallation(a.DB, repo.GetFullName(), e.Installation.GetID())
 			if err != nil {
 				log.Printf("Failed to delete snoozes for removed repo %s on installation %d: %v", repo.GetFullName(), e.Installation.GetID(), err)
+				return err
 			}
 		}
 	}
+	return nil
+}
+
+func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
+	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
+		// e.Repo contains the new name/owner, but we don't necessarily have the old one natively unless we parse it.
+		// However, the event gives us e.Repo.Owner.GetLogin() and e.Repo.GetName().
+		// If the repository ID was used, this wouldn't be an issue. Since we use Owner/Name, they will go stale.
+		// For now, log the event.
+		log.Printf("Repository %s was %s. Due to current schema mapping (Owner/RepoName), existing snoozes may become orphaned.", e.Repo.GetFullName(), *e.Action)
+	}
+	return nil
+}
+
+func (a *App) handleInstallationTargetEvent(e *github.InstallationTargetEvent) error {
+	if e.Action != nil && *e.Action == "renamed" {
+		log.Printf("Installation Target %s renamed. Existing snoozes using old login may become orphaned.", e.GetAccount().GetLogin())
+	}
+	return nil
+}
+
+type ClientError struct {
+	Err error
+}
+
+func (e *ClientError) Error() string {
+	return e.Err.Error()
 }
 
 func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string) error {
@@ -265,6 +304,12 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 
 	log.Printf("Received snooze command on repo %s for issue %d", e.Repo.GetFullName(), e.Issue.GetNumber())
 
+	if deliveryID == "" {
+		// Delivery ID is strongly required for actual webhooks to preserve idempotency guarantees.
+		log.Printf("Rejecting webhook without delivery ID to preserve idempotency guarantees.")
+		return &ClientError{Err: fmt.Errorf("missing X-GitHub-Delivery header")}
+	}
+
 	var installationID int64
 	if e.Installation != nil {
 		installationID = e.Installation.GetID()
@@ -277,7 +322,8 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 	client, err := a.getClient(installationID)
 	if err != nil {
 		log.Printf("Failed to establish authorization for App mode processing: %v. Command rejected.", err)
-		return nil
+		// We return a 500 error here to prompt GitHub to retry if it's transient
+		return err
 	}
 
 	loc := GetUserLocation(ctx, client, username)
@@ -286,28 +332,24 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 	targetTime, err := ParseTargetTime(cmd.DateString, loc, now)
 	if err != nil {
 		log.Printf("Failed to parse target time: %v", err)
-		return nil
+		// Return client error since this is bad input
+		return &ClientError{Err: fmt.Errorf("failed to parse target time: %v", err)}
 	}
 
 	// Webhook delivery idempotency with a transaction tied to successful handling.
-	if deliveryID != "" {
-		err = a.insertSnoozeIdempotent(deliveryID, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
-		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
-				return nil
-			} else {
-				log.Printf("Failed to insert snooze idempotently: %v", err)
-				return err
-			}
+	err = a.insertSnoozeIdempotent(deliveryID, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
+			return nil
 		} else {
-			log.Printf("Snooze inserted for %s at %v", username, targetTime)
+			log.Printf("Failed to insert snooze idempotently: %v", err)
+			return err
 		}
 	} else {
-		// Delivery ID is strongly required for actual webhooks to preserve idempotency guarantees.
-		log.Printf("Rejecting webhook without delivery ID to preserve idempotency guarantees.")
-		return fmt.Errorf("missing delivery ID")
+		log.Printf("Snooze inserted for %s at %v", username, targetTime)
 	}
+
 	return nil
 }
 
