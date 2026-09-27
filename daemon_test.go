@@ -178,6 +178,9 @@ func TestIdempotentInsert(t *testing.T) {
 
 	_ = db.QueryRow("SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = 'delivery-456'").Scan(&count)
 	assert.Equal(t, 1, count)
+
+	_ = db.QueryRow("SELECT COUNT(*) FROM snoozes").Scan(&count)
+	assert.Equal(t, 1, count)
 }
 
 func TestAppGetClient(t *testing.T) {
