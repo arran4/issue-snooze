@@ -148,12 +148,9 @@ func DeleteSnoozesByInstallation(db *sql.DB, installationID int64) error {
 	return err
 }
 
-// DeleteSnoozesByRepo removes all snoozes associated with a specific repository
-func DeleteSnoozesByRepo(db *sql.DB, repoFullName string) error {
-	// The DB stores repo_owner and repo_name separately.
-	// Since repoFullName is typically "owner/name", we need to delete by matching those.
-	// It's safer to just do a LIKE query or split it, but splitting is safer if we ensure it has a slash.
-	query := `DELETE FROM snoozes WHERE repo_owner || '/' || repo_name = ?`
-	_, err := db.Exec(query, repoFullName)
+// DeleteSnoozesByRepoAndInstallation removes all snoozes associated with a specific repository scoped safely to an installation
+func DeleteSnoozesByRepoAndInstallation(db *sql.DB, repoFullName string, installationID int64) error {
+	query := `DELETE FROM snoozes WHERE repo_owner || '/' || repo_name = ? AND installation_id = ?`
+	_, err := db.Exec(query, repoFullName, installationID)
 	return err
 }

@@ -230,6 +230,18 @@ func TestAppGetClient(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "GITHUB_APP_ID must be a valid positive integer")
 
+	// 6. Test validation blocks explicit negative App ID -2
+	app = &App{
+		Config: Config{
+			GitHubAppID:    -2,
+			GitHubAppIDRaw: "-2",
+			GitHubToken:    "secret_pat",
+		},
+	}
+	err = validateConfig(app.Config)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GITHUB_APP_ID must be a valid positive integer")
+
 	// 5. Test validation blocks explicit 0 or negative App ID
 	app = &App{
 		Config: Config{
