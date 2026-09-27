@@ -126,14 +126,35 @@ func TestIdempotentInsert(t *testing.T) {
 	err = app.insertSnoozeIdempotent("delivery-123", "owner", "repo", 1, "user", time.Now(), 1)
 	assert.NoError(t, err)
 
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM snoozes").Scan(&count)
+	assert.Equal(t, 1, count)
+
+	_ = db.QueryRow("SELECT COUNT(*) FROM processed_deliveries").Scan(&count)
+	assert.Equal(t, 1, count)
+
 	// 2. Second insert with same delivery ID should fail with unique constraint error
 	err = app.insertSnoozeIdempotent("delivery-123", "owner", "repo", 2, "user", time.Now(), 1)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
 
+	// No new snoozes should be inserted
+	_ = db.QueryRow("SELECT COUNT(*) FROM snoozes").Scan(&count)
+	assert.Equal(t, 1, count)
+
 	// 3. Rollback scenario: a failed snooze insert inside transaction shouldn't block future delivery
-	// Since we can't easily mock DB exec failure inside insertSnoozeIdempotent without a mock driver,
-	// we assume SQLite handles the transaction rollback as coded.
+	// We can trigger an error intentionally by passing an invalid NOT NULL constraint violation (e.g., if we could pass NULL).
+	// Since we can't do that easily without refactoring the signature, we'll manually drop a table temporarily to force an error.
+
+	// Drop snoozes temporarily so insert fails
+	_, _ = db.Exec("DROP TABLE snoozes")
+	err = app.insertSnoozeIdempotent("delivery-456", "owner", "repo", 1, "user", time.Now(), 1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to insert snooze inside transaction")
+
+	// Check that the delivery marker was rolled back
+	_ = db.QueryRow("SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = 'delivery-456'").Scan(&count)
+	assert.Equal(t, 0, count)
 }
 
 func TestAppGetClient(t *testing.T) {

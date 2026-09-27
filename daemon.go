@@ -181,12 +181,15 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleInstallationEvent(e *github.InstallationEvent) {
 	// Reconcile App lifecycle
-	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "suspend") {
-		log.Printf("Installation %d has been %s. Cleaning up snoozes.", e.Installation.GetID(), *e.Action)
+	if e.Action != nil && *e.Action == "deleted" {
+		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", e.Installation.GetID())
 		err := DeleteSnoozesByInstallation(a.DB, e.Installation.GetID())
 		if err != nil {
 			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
 		}
+	} else if e.Action != nil && *e.Action == "suspend" {
+		log.Printf("Installation %d has been suspended. Snoozes will remain but be skipped until unsuspended.", e.Installation.GetID())
+		// Deliberately doing nothing to preserve snoozes during temporary suspension
 	}
 }
 
