@@ -35,20 +35,55 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 	}
 
 	for _, snooze := range expired {
-		log.Printf("Processing expired snooze for @%s on %s/%s#%d",
-			snooze.Username, snooze.RepoOwner, snooze.RepoName, snooze.IssueID)
-
-		err := a.PostSnoozeReply(ctx, snooze)
+		// 4. Reminder reliability/concurrency: implement a claim model.
+		// We try to claim the snooze by setting a locked_until time.
+		// If another worker has already claimed it, this will return false.
+		claimed, err := a.claimSnooze(snooze.ID, now)
 		if err != nil {
-			log.Printf("Failed to post snooze reply for ID %d: %v", snooze.ID, err)
+			log.Printf("Failed to attempt claiming snooze ID %d: %v", snooze.ID, err)
+			continue
+		}
+		if !claimed {
+			// Another worker claimed it
 			continue
 		}
 
+		log.Printf("Processing expired snooze for @%s on %s/%s#%d",
+			snooze.Username, snooze.RepoOwner, snooze.RepoName, snooze.IssueID)
+
+		err = a.PostSnoozeReply(ctx, snooze)
+		if err != nil {
+			log.Printf("Failed to post snooze reply for ID %d: %v. Releasing claim for retry.", snooze.ID, err)
+			// Release the claim so it can be retried later
+			_ = a.releaseSnooze(snooze.ID)
+			continue
+		}
+
+		// Successful post removes/completes it
 		err = DeleteSnooze(a.DB, snooze.ID)
 		if err != nil {
 			log.Printf("Failed to delete processed snooze ID %d: %v", snooze.ID, err)
 		}
 	}
+}
+
+func (a *App) claimSnooze(id int, now time.Time) (bool, error) {
+	// Lock for 5 minutes
+	lockedUntil := now.Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)`, lockedUntil, id, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+func (a *App) releaseSnooze(id int) error {
+	_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = NULL WHERE id = ?`, id)
+	return err
 }
 
 // PostSnoozeReply posts a comment to the GitHub issue tagging the user

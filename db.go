@@ -57,6 +57,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		}
 	}
 
+	var existsLock bool
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('snoozes') WHERE name='locked_until'").Scan(&existsLock)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to inspect schema for migration (locked_until): %w", err)
+	}
+	if !existsLock {
+		_, err = db.Exec(`ALTER TABLE snoozes ADD COLUMN locked_until DATETIME DEFAULT NULL`)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to apply migration for locked_until: %w", err)
+		}
+	}
+
 	queryDeliveries := `
 	CREATE TABLE IF NOT EXISTS processed_deliveries (
 		delivery_id TEXT PRIMARY KEY,
