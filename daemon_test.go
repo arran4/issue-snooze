@@ -148,6 +148,7 @@ func TestIdempotentInsert(t *testing.T) {
 
 	// Drop snoozes temporarily so insert fails
 	_, _ = db.Exec("DROP TABLE snoozes")
+
 	err = app.insertSnoozeIdempotent("delivery-456", "owner", "repo", 1, "user", time.Now(), 1)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to insert snooze inside transaction")
@@ -155,6 +156,28 @@ func TestIdempotentInsert(t *testing.T) {
 	// Check that the delivery marker was rolled back
 	_ = db.QueryRow("SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = 'delivery-456'").Scan(&count)
 	assert.Equal(t, 0, count)
+
+	// Recreate table
+	query := `
+	CREATE TABLE snoozes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		repo_owner TEXT NOT NULL,
+		repo_name TEXT NOT NULL,
+		issue_id INTEGER NOT NULL,
+		username TEXT NOT NULL,
+		target_time DATETIME NOT NULL,
+		installation_id INTEGER DEFAULT 0,
+		locked_until DATETIME DEFAULT NULL
+	);
+	`
+	_, _ = db.Exec(query)
+
+	// Try successful retry
+	err = app.insertSnoozeIdempotent("delivery-456", "owner", "repo", 1, "user", time.Now(), 1)
+	assert.NoError(t, err)
+
+	_ = db.QueryRow("SELECT COUNT(*) FROM processed_deliveries WHERE delivery_id = 'delivery-456'").Scan(&count)
+	assert.Equal(t, 1, count)
 }
 
 func TestAppGetClient(t *testing.T) {

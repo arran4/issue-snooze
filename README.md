@@ -74,11 +74,11 @@ docker-compose up -d
 To run the daemon natively without Docker:
 
 ```bash
-go install github.com/arran4/issue-snooze@latest
+go install github.com/arran4/issue-snooze/cmd/issue-snooze@latest
 export GITHUB_APP_ID=123456
 export GITHUB_APP_PRIVATE_KEY_FILE=/path/to/key.pem
 export WEBHOOK_SECRET=mysecret
-snooze-bot run
+issue-snooze run
 ```
 
 ## Legacy PAT Deployment
