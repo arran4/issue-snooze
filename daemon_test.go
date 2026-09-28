@@ -110,6 +110,44 @@ func TestConfigTxtar(t *testing.T) {
 	}
 }
 
+func TestClaimSnooze(t *testing.T) {
+	dbFile := "test_claim.db"
+	defer func() { _ = os.Remove(dbFile) }()
+	db, err := InitDB(dbFile)
+	assert.NoError(t, err)
+	defer db.Close()
+	app := &App{DB: db}
+
+	err = InsertSnooze(db, "owner", "repo", 1, "user", time.Now().Add(-time.Hour), 1)
+	assert.NoError(t, err)
+
+	now := time.Now()
+	// Claim 1
+	claimed, err := app.claimSnooze(1, now, "worker-1")
+	assert.NoError(t, err)
+	assert.True(t, claimed)
+
+	// Claim 2 fails
+	claimed, err = app.claimSnooze(1, now, "worker-2")
+	assert.NoError(t, err)
+	assert.False(t, claimed)
+
+	// Renew 1
+	res, err := db.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, now.Add(5*time.Minute).UTC().Format(time.RFC3339), 1, "worker-1")
+	assert.NoError(t, err)
+	rows, _ := res.RowsAffected()
+	assert.Equal(t, int64(1), rows)
+
+	// Release 1
+	err = app.releaseSnooze(1, "worker-1")
+	assert.NoError(t, err)
+
+	// Claim 2 now succeeds
+	claimed, err = app.claimSnooze(1, now, "worker-2")
+	assert.NoError(t, err)
+	assert.True(t, claimed)
+}
+
 func TestIdempotentInsert(t *testing.T) {
 	dbFile := "test_idempotent.db"
 	defer func() {

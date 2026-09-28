@@ -85,7 +85,7 @@ func (a *App) claimSnooze(id int, now time.Time, ownerToken string) (bool, error
 	return rows > 0, nil
 }
 
-func (a *App) renewSnoozeClaim(ctx context.Context, id int, ownerToken string) {
+func (a *App) renewSnoozeClaim(ctx context.Context, id int, ownerToken string, cancelWork context.CancelFunc) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -97,11 +97,14 @@ func (a *App) renewSnoozeClaim(ctx context.Context, id int, ownerToken string) {
 			lockedUntil := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 			res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, lockedUntil, id, ownerToken)
 			if err != nil {
-				log.Printf("Failed to renew claim for snooze ID %d: %v", id, err)
+				log.Printf("Failed to renew claim for snooze ID %d: %v. Cancelling work.", id, err)
+				cancelWork()
+				return
 			} else {
 				rows, _ := res.RowsAffected()
 				if rows == 0 {
 					log.Printf("Failed to renew claim for snooze ID %d: no longer owned by %s", id, ownerToken)
+					cancelWork()
 					return // Stop renewing if we lost ownership
 				}
 			}
@@ -129,9 +132,12 @@ func (a *App) deleteSnoozeIfOwned(id int, ownerToken string) error {
 
 // PostSnoozeReply posts a comment to the GitHub issue tagging the user
 func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerToken string) error {
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
+
 	renewCtx, cancelRenew := context.WithCancel(ctx)
 	defer cancelRenew()
-	go a.renewSnoozeClaim(renewCtx, snooze.ID, ownerToken)
+	go a.renewSnoozeClaim(renewCtx, snooze.ID, ownerToken, cancelWork)
 
 	client, err := a.getClient(snooze.InstallationID)
 	if err != nil {
@@ -146,6 +152,6 @@ func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerTok
 		Body: &body,
 	}
 
-	_, _, err = client.Issues.CreateComment(ctx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
+	_, _, err = client.Issues.CreateComment(workCtx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
 	return err
 }
