@@ -34,9 +34,9 @@ dockers_v2:
 nfpms:
   - id: linux-packages
     package_name: issue-snooze
-    vendor: Your Org
+    vendor: Arran4
     homepage: https://github.com/arran4/issue-snooze
-    maintainer: You <you@example.com>
+    maintainer: Arran4 <arran4@users.noreply.github.com>
     description: Issue snooze bot
     license: MIT
     formats:

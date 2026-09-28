@@ -3,6 +3,7 @@ package snoozebot
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -35,14 +36,24 @@ func ParseCommand(body string, botCommand string) SnoozeCommand {
 }
 
 // GetUserLocation fetches the user's location from GitHub
-func GetUserLocation(ctx context.Context, client *github.Client, username string) *time.Location {
+func GetUserLocation(ctx context.Context, client *github.Client, username string) (*time.Location, error) {
 	if client == nil {
-		return time.UTC
+		return time.UTC, nil
 	}
 
-	user, _, err := client.Users.Get(ctx, username)
-	if err != nil || user.Location == nil || *user.Location == "" {
-		return time.UTC
+	user, resp, err := client.Users.Get(ctx, username)
+	if err != nil {
+		if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// Permission denied / Not Found etc. We fall back to UTC instead of blocking forever.
+			log.Printf("Non-retryable error getting user location (HTTP %d): %v", resp.StatusCode, err)
+			return time.UTC, nil
+		}
+		// Network errors, 5xx etc. are retryable.
+		return nil, fmt.Errorf("failed to lookup user location: %w", err)
+	}
+
+	if user.Location == nil || *user.Location == "" {
+		return time.UTC, nil
 	}
 
 	// This is a simplified timezone resolution. A real implementation might need a mapping
@@ -50,11 +61,11 @@ func GetUserLocation(ctx context.Context, client *github.Client, username string
 	// Here we try to parse it as a valid IANA location if possible, otherwise fallback to UTC.
 	loc, err := time.LoadLocation(*user.Location)
 	if err == nil {
-		return loc
+		return loc, nil
 	}
 
 	// Default to UTC if location cannot be parsed directly to a timezone
-	return time.UTC
+	return time.UTC, nil
 }
 
 // ParseTargetTime parses the natural language date string into a time.Time based on location

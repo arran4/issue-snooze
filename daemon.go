@@ -326,7 +326,11 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 		return err
 	}
 
-	loc := GetUserLocation(ctx, client, username)
+	loc, locErr := GetUserLocation(ctx, client, username)
+	if locErr != nil {
+		log.Printf("Transient error resolving user location for timezone: %v", locErr)
+		return locErr
+	}
 
 	now := time.Now()
 	targetTime, err := ParseTargetTime(cmd.DateString, loc, now)
