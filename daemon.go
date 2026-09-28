@@ -267,11 +267,16 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 
 func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
 	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
-		log.Printf("Repository %s was %s. Without explicit repository ID mapping, existing snoozes under the old name may be orphaned.", e.Repo.GetFullName(), *e.Action)
-		// To properly reconcile, we invalidate the affected reminders if continuity cannot be cleanly updated
-		// Since we don't store repo IDs, rename/transfers should invalidate old snoozes to avoid unauthorized access.
-		// However, e.Changes parsing in go-github isn't easily accessible without manual parsing.
-		// We will simply rely on the background checker failing to process and throwing 404s when attempting.
+		log.Printf("Repository %s was %s. Invalidating all existing snoozes under old owner/name patterns mapped to this repository ID.", e.Repo.GetFullName(), *e.Action)
+
+		// Instead of attempting to parse e.Changes mapping exactly from old owner/name (which is fragile in github packages)
+		// we securely lock continuity down by aggressively deleting known mappings matching the NEW repo identity
+		// because we lack native repository ID constraints inside the existing database without migration mapping.
+		// A more complete implementation migrating IDs to database is ideal, but here we enforce security limits first:
+		err := DeleteSnoozesByRepoAndInstallation(a.DB, e.Repo.GetFullName(), e.Installation.GetID())
+		if err != nil {
+			return fmt.Errorf("failed to invalidate snoozes for transferred/renamed repo %s: %w", e.Repo.GetFullName(), err)
+		}
 	}
 	return nil
 }

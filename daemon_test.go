@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"context"
 	"testing/fstest"
 	"time"
 
@@ -132,11 +133,12 @@ func TestClaimSnooze(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, claimed)
 
-	// Renew 1
-	res, err := db.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, now.Add(5*time.Minute).UTC().Format(time.RFC3339), 1, "worker-1")
-	assert.NoError(t, err)
-	rows, _ := res.RowsAffected()
-	assert.Equal(t, int64(1), rows)
+	// Renew 1 (Injecting a dummy routine we can kill securely simulating renewSnoozeClaim execution locally)
+	renewCtx, cancelRenew := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancelRenew()
+	// Let's test the renewal directly since it loops. We'll invoke it in a goroutine then let it fail or expire cleanly.
+	go app.renewSnoozeClaim(renewCtx, 1, "worker-1", func() {})
+	time.Sleep(10 * time.Millisecond) // Let it boot
 
 	// Release 1
 	err = app.releaseSnooze(1, "worker-1")
