@@ -115,7 +115,7 @@ func TestClaimSnooze(t *testing.T) {
 	defer func() { _ = os.Remove(dbFile) }()
 	db, err := InitDB(dbFile)
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	app := &App{DB: db}
 
 	err = InsertSnooze(db, "owner", "repo", 1, "user", time.Now().Add(-time.Hour), 1)

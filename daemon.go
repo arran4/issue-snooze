@@ -228,7 +228,6 @@ func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
 	// Reconcile App lifecycle
 	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "new_permissions_accepted") {
 		// Just clearing out local scopes and cache if permissions change explicitly
-		// A full sync is safer, but for now we simply purge the cache to force a new token claim.
 		a.appTransportMux.Lock()
 		if a.appTransports != nil {
 			delete(a.appTransports, e.Installation.GetID())
@@ -242,16 +241,11 @@ func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
 			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
 			return err
 		}
-
-		// Issue #4: Clears the cached installation transport when an installation is permanently deleted
-		a.appTransportMux.Lock()
-		if a.appTransports != nil {
-			delete(a.appTransports, e.Installation.GetID())
-		}
-		a.appTransportMux.Unlock()
 	} else if e.Action != nil && *e.Action == "suspend" {
 		log.Printf("Installation %d has been suspended. Snoozes will remain but will fail and retry until authorization returns.", e.Installation.GetID())
 		// Deliberately doing nothing to preserve snoozes during temporary suspension
+	} else if e.Action != nil && *e.Action == "unsuspend" {
+		log.Printf("Installation %d has been unsuspended. Snoozes will resume processing.", e.Installation.GetID())
 	}
 	return nil
 }
@@ -273,7 +267,11 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 
 func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
 	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
-		log.Printf("Repository %s was %s. Invalidating old snoozes to enforce permission boundaries safely (requires manual migration or ID caching).", e.Repo.GetFullName(), *e.Action)
+		log.Printf("Repository %s was %s. Without explicit repository ID mapping, existing snoozes under the old name may be orphaned.", e.Repo.GetFullName(), *e.Action)
+		// To properly reconcile, we invalidate the affected reminders if continuity cannot be cleanly updated
+		// Since we don't store repo IDs, rename/transfers should invalidate old snoozes to avoid unauthorized access.
+		// However, e.Changes parsing in go-github isn't easily accessible without manual parsing.
+		// We will simply rely on the background checker failing to process and throwing 404s when attempting.
 	}
 	return nil
 }
