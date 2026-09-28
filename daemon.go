@@ -273,8 +273,6 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 
 func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
 	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
-		// e.Changes isn't strongly typed for repository renames in this go-github version natively without raw payload parsing.
-		// Instead we log the transfer and rely on explicit invalidation patterns if available, or accept the orphan condition.
 		log.Printf("Repository %s was %s. Invalidating old snoozes to enforce permission boundaries safely (requires manual migration or ID caching).", e.Repo.GetFullName(), *e.Action)
 	}
 	return nil

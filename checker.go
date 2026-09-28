@@ -41,7 +41,8 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 		// 4. Reminder reliability/concurrency: implement a claim model.
 		// We try to claim the snooze by setting a locked_until time.
 		// If another worker has already claimed it, this will return false.
-		claimed, err := a.claimSnooze(snooze.ID, currentNow)
+		ownerToken := fmt.Sprintf("worker-%d-%d", snooze.ID, currentNow.UnixNano())
+		claimed, err := a.claimSnooze(snooze.ID, currentNow, ownerToken)
 		if err != nil {
 			log.Printf("Failed to attempt claiming snooze ID %d: %v", snooze.ID, err)
 			continue
@@ -54,26 +55,26 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 		log.Printf("Processing expired snooze for @%s on %s/%s#%d",
 			snooze.Username, snooze.RepoOwner, snooze.RepoName, snooze.IssueID)
 
-		err = a.PostSnoozeReply(ctx, snooze)
+		err = a.PostSnoozeReply(ctx, snooze, ownerToken)
 		if err != nil {
 			log.Printf("Failed to post snooze reply for ID %d: %v. Releasing claim for retry.", snooze.ID, err)
 			// Release the claim so it can be retried later
-			_ = a.releaseSnooze(snooze.ID)
+			_ = a.releaseSnooze(snooze.ID, ownerToken)
 			continue
 		}
 
 		// Successful post removes/completes it
-		err = DeleteSnooze(a.DB, snooze.ID)
+		err = a.deleteSnoozeIfOwned(snooze.ID, ownerToken)
 		if err != nil {
 			log.Printf("Failed to delete processed snooze ID %d: %v", snooze.ID, err)
 		}
 	}
 }
 
-func (a *App) claimSnooze(id int, now time.Time) (bool, error) {
-	// Lock for 5 minutes initially
+func (a *App) claimSnooze(id int, now time.Time, ownerToken string) (bool, error) {
+	// Lock for 5 minutes initially with a specific owner token
 	lockedUntil := now.Add(5 * time.Minute).UTC().Format(time.RFC3339)
-	res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)`, lockedUntil, id, now.UTC().Format(time.RFC3339))
+	res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ?, claim_owner = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)`, lockedUntil, ownerToken, id, now.UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, err
 	}
@@ -84,7 +85,7 @@ func (a *App) claimSnooze(id int, now time.Time) (bool, error) {
 	return rows > 0, nil
 }
 
-func (a *App) renewSnoozeClaim(ctx context.Context, id int) {
+func (a *App) renewSnoozeClaim(ctx context.Context, id int, ownerToken string) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -92,26 +93,45 @@ func (a *App) renewSnoozeClaim(ctx context.Context, id int) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Renew lock for another 5 minutes
+			// Renew lock for another 5 minutes only if we still own it
 			lockedUntil := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
-			_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ?`, lockedUntil, id)
+			res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, lockedUntil, id, ownerToken)
 			if err != nil {
 				log.Printf("Failed to renew claim for snooze ID %d: %v", id, err)
+			} else {
+				rows, _ := res.RowsAffected()
+				if rows == 0 {
+					log.Printf("Failed to renew claim for snooze ID %d: no longer owned by %s", id, ownerToken)
+					return // Stop renewing if we lost ownership
+				}
 			}
 		}
 	}
 }
 
-func (a *App) releaseSnooze(id int) error {
-	_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = NULL WHERE id = ?`, id)
+func (a *App) releaseSnooze(id int, ownerToken string) error {
+	// Release only if we are still the owner
+	_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = NULL, claim_owner = NULL WHERE id = ? AND claim_owner = ?`, id, ownerToken)
 	return err
 }
 
+func (a *App) deleteSnoozeIfOwned(id int, ownerToken string) error {
+	res, err := a.DB.Exec(`DELETE FROM snoozes WHERE id = ? AND claim_owner = ?`, id, ownerToken)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("failed to delete snooze %d: no longer owned by %s", id, ownerToken)
+	}
+	return nil
+}
+
 // PostSnoozeReply posts a comment to the GitHub issue tagging the user
-func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord) error {
+func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerToken string) error {
 	renewCtx, cancelRenew := context.WithCancel(ctx)
 	defer cancelRenew()
-	go a.renewSnoozeClaim(renewCtx, snooze.ID)
+	go a.renewSnoozeClaim(renewCtx, snooze.ID, ownerToken)
 
 	client, err := a.getClient(snooze.InstallationID)
 	if err != nil {

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  snooze-bot:
+  issue-snooze:
     image: ghcr.io/arran4/issue-snooze:latest
     ports:
       - "8080:8080"

@@ -167,7 +167,8 @@ func TestIdempotentInsert(t *testing.T) {
 		username TEXT NOT NULL,
 		target_time DATETIME NOT NULL,
 		installation_id INTEGER DEFAULT 0,
-		locked_until DATETIME DEFAULT NULL
+		locked_until DATETIME DEFAULT NULL,
+			claim_owner TEXT DEFAULT NULL
 	);
 	`
 	_, _ = db.Exec(query)

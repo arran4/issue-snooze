@@ -71,6 +71,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		}
 	}
 
+	var existsOwner bool
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('snoozes') WHERE name='claim_owner'").Scan(&existsOwner)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to inspect schema for migration (claim_owner): %w", err)
+	}
+	if !existsOwner {
+		_, err = db.Exec(`ALTER TABLE snoozes ADD COLUMN claim_owner TEXT DEFAULT NULL`)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to apply migration for claim_owner: %w", err)
+		}
+	}
+
 	queryDeliveries := `
 	CREATE TABLE IF NOT EXISTS processed_deliveries (
 		delivery_id TEXT PRIMARY KEY,
