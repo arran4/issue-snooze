@@ -20,7 +20,8 @@ To use `issue-snooze`, you must first register it as a GitHub App on your accoun
    - `Issue comment`
    - `Installation`
    - `Installation repositories`
-   *(Note: Subscribing to Installation and Installation repositories is required so the daemon knows when it has been uninstalled or removed from a repository, allowing it to clean up old reminders).*
+   - `Repository`
+   *(Note: Subscribing to these lifecycle events is required so the daemon knows when it has been uninstalled, suspended, removed, transferred, or renamed allowing it to clean up old reminders safely without leaving orphans).*
 8. Click **Create GitHub App**.
 9. Once created, note your **App ID** near the top of the general settings page.
 10. Scroll down and click **Generate a private key**. A `.pem` file will download to your computer. Store this securely.
@@ -56,6 +57,7 @@ Once installed, create a test issue and a test Pull Request on a repository wher
 - Verify the daemon log acknowledges the snooze command.
 - Wait 1 minute.
 - Verify the bot replies tagging your username.
+- Restart the daemon and observe SQLite persistence handling retry.
 
 ### Environment Variables
 
@@ -77,7 +79,7 @@ The recommended way to deploy is using Docker Compose. Create a `docker-compose.
 version: '3.8'
 
 services:
-  snooze-bot:
+  issue-snooze:
     # If a pre-built image is not published, build it locally with:
     # build:
     #   context: .

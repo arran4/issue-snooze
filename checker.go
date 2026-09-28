@@ -71,7 +71,7 @@ func (a *App) CheckExpiredSnoozes(ctx context.Context) {
 }
 
 func (a *App) claimSnooze(id int, now time.Time) (bool, error) {
-	// Lock for 5 minutes
+	// Lock for 5 minutes initially
 	lockedUntil := now.Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)`, lockedUntil, id, now.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -84,6 +84,24 @@ func (a *App) claimSnooze(id int, now time.Time) (bool, error) {
 	return rows > 0, nil
 }
 
+func (a *App) renewSnoozeClaim(ctx context.Context, id int) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Renew lock for another 5 minutes
+			lockedUntil := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+			_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ?`, lockedUntil, id)
+			if err != nil {
+				log.Printf("Failed to renew claim for snooze ID %d: %v", id, err)
+			}
+		}
+	}
+}
+
 func (a *App) releaseSnooze(id int) error {
 	_, err := a.DB.Exec(`UPDATE snoozes SET locked_until = NULL WHERE id = ?`, id)
 	return err
@@ -91,6 +109,10 @@ func (a *App) releaseSnooze(id int) error {
 
 // PostSnoozeReply posts a comment to the GitHub issue tagging the user
 func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord) error {
+	renewCtx, cancelRenew := context.WithCancel(ctx)
+	defer cancelRenew()
+	go a.renewSnoozeClaim(renewCtx, snooze.ID)
+
 	client, err := a.getClient(snooze.InstallationID)
 	if err != nil {
 		return fmt.Errorf("could not get GitHub client for reply: %w", err)

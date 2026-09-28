@@ -154,3 +154,10 @@ func DeleteSnoozesByRepoAndInstallation(db *sql.DB, repoFullName string, install
 	_, err := db.Exec(query, repoFullName, installationID)
 	return err
 }
+
+// UpdateSnoozesRepoName updates the repo name for a given installation
+func UpdateSnoozesRepoName(db *sql.DB, oldName string, newName string, installationID int64) error {
+	query := `UPDATE snoozes SET repo_name = ? WHERE repo_name = ? AND installation_id = ?`
+	_, err := db.Exec(query, newName, oldName, installationID)
+	return err
+}

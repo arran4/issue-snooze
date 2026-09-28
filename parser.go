@@ -43,12 +43,22 @@ func GetUserLocation(ctx context.Context, client *github.Client, username string
 
 	user, resp, err := client.Users.Get(ctx, username)
 	if err != nil {
-		if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// Permission denied / Not Found etc. We fall back to UTC instead of blocking forever.
-			log.Printf("Non-retryable error getting user location (HTTP %d): %v", resp.StatusCode, err)
-			return time.UTC, nil
+		if resp != nil {
+			if resp.StatusCode == 404 {
+				// User not found/unavailable -> Fallback to UTC
+				log.Printf("User not found (HTTP 404), falling back to UTC: %v", err)
+				return time.UTC, nil
+			}
+			if resp.StatusCode == 401 || resp.StatusCode == 403 {
+				// Auth/permission failure -> Error out so we can retry or address it
+				return nil, fmt.Errorf("auth/permission error getting user location (HTTP %d): %w", resp.StatusCode, err)
+			}
+			if resp.StatusCode == 429 {
+				// Rate limiting -> Retryable error
+				return nil, fmt.Errorf("rate limited getting user location (HTTP 429): %w", err)
+			}
 		}
-		// Network errors, 5xx etc. are retryable.
+		// General network errors, 5xx etc. are retryable.
 		return nil, fmt.Errorf("failed to lookup user location: %w", err)
 	}
 
