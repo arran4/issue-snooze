@@ -93,6 +93,6 @@ func TestReminderPermissionFailureEvictsAuthAndFreshRetryRecovers(t *testing.T) 
 	_, cached = app.appTransports[10]
 	app.appTransportMux.Unlock()
 	assert.True(t, cached, "retry should build fresh installation auth")
-	assert.GreaterOrEqual(t, tokenRequests.Load(), int32(2), "retry should obtain a fresh installation token")
+	assert.True(t, tokenRequests.Load() >= 2, "retry should obtain a fresh installation token")
 	assert.Equal(t, int32(2), commentRequests.Load())
 }
