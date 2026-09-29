@@ -271,7 +271,7 @@ jobs:
           distribution: goreleaser
           version: '~> v2'
           args: release --snapshot --clean --skip=publish,docker
-      - name: Verify snapshot architectures and native CLI startup
+      - name: Verify snapshot architectures and native daemon startup
         shell: bash
         run: |
           set -euo pipefail
@@ -280,6 +280,52 @@ jobs:
           grep -q 'arm64' dist/metadata.json
           go build -o /tmp/issue-snooze ./cmd/issue-snooze
           /tmp/issue-snooze --help >/dev/null
+          set +e
+          GITHUB_TOKEN=dummy WEBHOOK_SECRET=dummy DATABASE_FILE=/tmp/native-snooze.db PORT=18080 \
+            timeout 2s /tmp/issue-snooze run
+          rc=$?
+          set -e
+          test "$rc" -eq 124
+          test -s /tmp/native-snooze.db
+      - uses: docker/setup-buildx-action@v3
+      - name: Build released Dockerfile from GoReleaser amd64 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$(find dist -type f -path '*linux-amd64*' -name issue-snooze -perm -111 | head -n1)"
+          test -n "$binary"
+          mkdir -p /tmp/issue-snooze-image/linux/amd64
+          cp "$binary" /tmp/issue-snooze-image/linux/amd64/issue-snooze
+          cp Dockerfile.goreleaser /tmp/issue-snooze-image/
+          docker buildx build --platform linux/amd64 --load \
+            -t issue-snooze:ci /tmp/issue-snooze-image
+      - name: Smoke container startup and SQLite persistence across restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create issue-snooze-ci-data >/dev/null
+          cleanup() {
+            docker rm -f issue-snooze-ci >/dev/null 2>&1 || true
+            docker volume rm issue-snooze-ci-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name issue-snooze-ci \
+            -e GITHUB_TOKEN=dummy \
+            -e WEBHOOK_SECRET=dummy \
+            -v issue-snooze-ci-data:/data \
+            issue-snooze:ci >/dev/null
+          sleep 2
+          test "$(docker inspect -f '{{.State.Running}}' issue-snooze-ci)" = true
+          docker exec issue-snooze-ci test -s /data/snooze.db
+          docker rm -f issue-snooze-ci >/dev/null
+          docker run -d --name issue-snooze-ci \
+            -e GITHUB_TOKEN=dummy \
+            -e WEBHOOK_SECRET=dummy \
+            -v issue-snooze-ci-data:/data \
+            issue-snooze:ci >/dev/null
+          sleep 2
+          test "$(docker inspect -f '{{.State.Running}}' issue-snooze-ci)" = true
+          docker exec issue-snooze-ci test -s /data/snooze.db
 
   goreleaser:
     name: GoReleaser
