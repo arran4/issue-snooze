@@ -67,8 +67,7 @@ func TestConfigTxtar(t *testing.T) {
 			for _, f := range ar.Files {
 				switch {
 				case f.Name == "env":
-					for _, line := range strings.Split(string(f.Data), "
-") {
+					for _, line := range strings.Split(string(f.Data), "\\n") {
 						line = strings.TrimSpace(line)
 						if line == "" {
 							continue
