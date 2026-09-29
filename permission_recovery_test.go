@@ -31,7 +31,7 @@ func TestReminderPermissionFailureEvictsAuthAndFreshRetryRecovers(t *testing.T) 
 
 	http.DefaultTransport = testRoundTripper(func(req *http.Request) (*http.Response, error) {
 		status := http.StatusOK
-		body := `{}`
+		var body string
 		switch {
 		case strings.HasPrefix(req.URL.Path, "/app/installations/10/access_tokens"):
 			tokenRequests.Add(1)
