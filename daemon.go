@@ -439,11 +439,8 @@ func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int
 		return err
 	}
 
-	// Clean up old deliveries (e.g. older than 7 days) after successful commit
-	go func() {
-		_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
-	}()
-
+	// Keep delivery IDs durably. Expiring them would allow an old webhook
+	// delivery to be replayed into a second snooze.
 	return nil
 }
 
