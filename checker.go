@@ -139,14 +139,18 @@ func (a *App) deleteSnoozeIfOwned(id int, ownerToken string) error {
 	return nil
 }
 
-// PostSnoozeReply posts a comment to the GitHub issue tagging the user
+// PostSnoozeReply posts a comment to the GitHub issue tagging the user.
 func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerToken string) error {
+	return a.postSnoozeReplyWithRenewInterval(ctx, snooze, ownerToken, 2*time.Minute)
+}
+
+func (a *App) postSnoozeReplyWithRenewInterval(ctx context.Context, snooze SnoozeRecord, ownerToken string, renewInterval time.Duration) error {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 
 	renewCtx, cancelRenew := context.WithCancel(ctx)
 	defer cancelRenew()
-	go a.renewSnoozeClaimLoop(renewCtx, snooze.ID, ownerToken, cancelWork, 2*time.Minute)
+	go a.renewSnoozeClaimLoop(renewCtx, snooze.ID, ownerToken, cancelWork, renewInterval)
 
 	client, err := a.getClient(snooze.InstallationID)
 	if err != nil {
