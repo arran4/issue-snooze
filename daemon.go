@@ -37,7 +37,7 @@ func loadConfig() Config {
 			appID = id
 		} else {
 			log.Printf("Invalid GITHUB_APP_ID %q: %v", appIDStr, err)
-			appID = -1 // Use -1 to represent an explicitly invalid ID
+			appID = -1
 		}
 	}
 
@@ -54,7 +54,6 @@ func loadConfig() Config {
 	return cfg
 }
 
-// Make OS interactions mockable for tests
 var (
 	lookupEnv = os.LookupEnv
 	readFile  = os.ReadFile
@@ -81,13 +80,11 @@ func getEnvOrSecret(fileKey, envKey, fallback string) string {
 	return fallback
 }
 
-// App holds the application state
 type App struct {
 	Config Config
-	Client *github.Client // Fallback PAT client
+	Client *github.Client
 	DB     *sql.DB
 
-	// Cache for GitHub App transports to allow token renewal reuse
 	appTransports   map[int64]*ghinstallation.Transport
 	appTransportMux sync.Mutex
 }
@@ -111,21 +108,26 @@ func validateConfig(cfg Config) error {
 	if appFieldsPresent && !appMode {
 		return fmt.Errorf("partial GitHub App configuration detected. You must provide App ID, Private Key File, and Webhook Secret")
 	}
-
 	if appMode && patMode {
 		log.Printf("Both GitHub App and PAT are configured. Proceeding in App Mode exclusively.")
 		return nil
 	}
-
 	if !appMode && !patMode {
 		return fmt.Errorf("no valid authentication method configured")
 	}
-
 	return nil
 }
 
+func (a *App) evictInstallationTransport(installationID int64) {
+	a.appTransportMux.Lock()
+	defer a.appTransportMux.Unlock()
+	if a.appTransports != nil {
+		delete(a.appTransports, installationID)
+	}
+}
+
 // getClient returns a GitHub client authenticated for the specific installation if possible.
-// It explicitly enforces boundaries: App mode requests must use App credentials, and PAT is only for PAT mode.
+// App mode never falls back to PAT authentication.
 func (a *App) getClient(installationID int64) (*github.Client, error) {
 	if isAppModeConfig(a.Config) {
 		if installationID <= 0 {
@@ -141,9 +143,6 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 
 		itr, ok := a.appTransports[installationID]
 		if !ok {
-			// To fulfill requirements 3, 4, 8:
-			// "To properly fulfill installation-token caching and renewal, we should cache this transport."
-			var err error
 			appsTransport, err := ghinstallation.NewAppsTransportKeyFromFile(http.DefaultTransport, a.Config.GitHubAppID, a.Config.GitHubAppPrivateKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ghinstallation apps transport: %w", err)
@@ -155,7 +154,6 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 		return github.NewClient(&http.Client{Transport: itr}), nil
 	}
 
-	// Fallback to PAT mode ONLY if we are explicitly not in App Mode
 	if isPATModeConfig(a.Config) && a.Client != nil {
 		return a.Client, nil
 	}
@@ -167,7 +165,6 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	var payload []byte
 	var err error
 
-	// Require webhook secret for GitHub App mode
 	if a.Config.GitHubAppID > 0 && a.Config.WebhookSecret == "" {
 		log.Printf("Webhook secret is required when running as a GitHub App")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -179,7 +176,6 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	} else {
 		payload, err = github.ValidatePayload(r, nil)
 	}
-
 	if err != nil {
 		log.Printf("Error validating webhook payload: %v", err)
 		http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -187,7 +183,6 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deliveryID := github.DeliveryID(r)
-
 	event, err := github.ParseWebHook(github.WebHookType(r), payload)
 	if err != nil {
 		log.Printf("Error parsing webhook: %v", err)
@@ -208,7 +203,6 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	case *github.InstallationTargetEvent:
 		handlerErr = a.handleInstallationTargetEvent(e)
 	default:
-		// Not an event we process, ignore
 	}
 
 	if handlerErr != nil {
@@ -225,27 +219,27 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
-	// Reconcile App lifecycle
-	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "new_permissions_accepted") {
-		// Just clearing out local scopes and cache if permissions change explicitly
-		a.appTransportMux.Lock()
-		if a.appTransports != nil {
-			delete(a.appTransports, e.Installation.GetID())
-		}
-		a.appTransportMux.Unlock()
+	if e.Action == nil {
+		return nil
 	}
-	if e.Action != nil && *e.Action == "deleted" {
-		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", e.Installation.GetID())
-		err := DeleteSnoozesByInstallation(a.DB, e.Installation.GetID())
-		if err != nil {
-			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
-			return err
+	installationID := e.Installation.GetID()
+
+	switch *e.Action {
+	case "deleted":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", installationID)
+		if err := DeleteSnoozesByInstallation(a.DB, installationID); err != nil {
+			return fmt.Errorf("failed to delete snoozes for removed installation %d: %w", installationID, err)
 		}
-	} else if e.Action != nil && *e.Action == "suspend" {
-		log.Printf("Installation %d has been suspended. Snoozes will remain but will fail and retry until authorization returns.", e.Installation.GetID())
-		// Deliberately doing nothing to preserve snoozes during temporary suspension
-	} else if e.Action != nil && *e.Action == "unsuspend" {
-		log.Printf("Installation %d has been unsuspended. Snoozes will resume processing.", e.Installation.GetID())
+	case "new_permissions_accepted":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d accepted new permissions. Cached authorization was evicted.", installationID)
+	case "suspend":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d has been suspended. Snoozes remain queued for retry.", installationID)
+	case "unsuspend":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d has been unsuspended. Snoozes will resume with fresh authorization.", installationID)
 	}
 	return nil
 }
@@ -253,12 +247,9 @@ func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
 func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationRepositoriesEvent) error {
 	if e.Action != nil && *e.Action == "removed" {
 		for _, repo := range e.RepositoriesRemoved {
-			// We restrict the deletion exclusively to the provided Installation ID mapped globally to the specific repo removal.
 			log.Printf("Repository %s removed from installation %d. Cleaning up snoozes.", repo.GetFullName(), e.Installation.GetID())
-			err := DeleteSnoozesByRepoAndInstallation(a.DB, repo.GetFullName(), e.Installation.GetID())
-			if err != nil {
-				log.Printf("Failed to delete snoozes for removed repo %s on installation %d: %v", repo.GetFullName(), e.Installation.GetID(), err)
-				return err
+			if err := DeleteSnoozesByRepoAndInstallation(a.DB, repo.GetFullName(), e.Installation.GetID()); err != nil {
+				return fmt.Errorf("failed to delete snoozes for removed repo %s on installation %d: %w", repo.GetFullName(), e.Installation.GetID(), err)
 			}
 		}
 	}
@@ -266,26 +257,65 @@ func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationReposito
 }
 
 func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
-	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
-		log.Printf("Repository %s was %s. Invalidating all existing snoozes under old owner/name patterns mapped to this repository ID.", e.Repo.GetFullName(), *e.Action)
+	if e.Action == nil || (*e.Action != "renamed" && *e.Action != "transferred") {
+		return nil
+	}
+	if e.Repo == nil || e.Changes == nil {
+		return fmt.Errorf("repository %s missing repository or changes payload", *e.Action)
+	}
 
-		// Instead of attempting to parse e.Changes mapping exactly from old owner/name (which is fragile in github packages)
-		// we securely lock continuity down by aggressively deleting known mappings matching the NEW repo identity
-		// because we lack native repository ID constraints inside the existing database without migration mapping.
-		// A more complete implementation migrating IDs to database is ideal, but here we enforce security limits first:
-		err := DeleteSnoozesByRepoAndInstallation(a.DB, e.Repo.GetFullName(), e.Installation.GetID())
-		if err != nil {
-			return fmt.Errorf("failed to invalidate snoozes for transferred/renamed repo %s: %w", e.Repo.GetFullName(), err)
+	newOwner := e.Repo.Owner.GetLogin()
+	newName := e.Repo.GetName()
+	if newOwner == "" || newName == "" {
+		return fmt.Errorf("repository %s missing new identity data", *e.Action)
+	}
+
+	oldOwner := newOwner
+	oldName := newName
+	switch *e.Action {
+	case "renamed":
+		if e.Changes.Repo == nil || e.Changes.Repo.Name == nil || e.Changes.Repo.Name.From == nil {
+			return fmt.Errorf("repository renamed missing old name identity")
 		}
+		oldName = *e.Changes.Repo.Name.From
+	case "transferred":
+		if e.Changes.Owner == nil || e.Changes.Owner.OwnerInfo == nil {
+			return fmt.Errorf("repository transferred missing old owner identity")
+		}
+		switch {
+		case e.Changes.Owner.OwnerInfo.User != nil && e.Changes.Owner.OwnerInfo.User.Login != nil:
+			oldOwner = *e.Changes.Owner.OwnerInfo.User.Login
+		case e.Changes.Owner.OwnerInfo.Org != nil && e.Changes.Owner.OwnerInfo.Org.Login != nil:
+			oldOwner = *e.Changes.Owner.OwnerInfo.Org.Login
+		default:
+			return fmt.Errorf("repository transferred missing old owner identity")
+		}
+		if e.Changes.Repo != nil && e.Changes.Repo.Name != nil && e.Changes.Repo.Name.From != nil {
+			oldName = *e.Changes.Repo.Name.From
+		}
+	}
+
+	log.Printf("Repository %s was %s. Updating mapped snoozes from %s/%s to %s/%s", e.Repo.GetFullName(), *e.Action, oldOwner, oldName, newOwner, newName)
+	if err := UpdateSnoozesRepoIdentity(a.DB, oldOwner, oldName, newOwner, newName, e.Installation.GetID()); err != nil {
+		return fmt.Errorf("failed to update snoozes for %s repo %s/%s to %s/%s: %w", *e.Action, oldOwner, oldName, newOwner, newName, err)
 	}
 	return nil
 }
 
 func (a *App) handleInstallationTargetEvent(e *github.InstallationTargetEvent) error {
-	if e.Action != nil && *e.Action == "renamed" {
-		log.Printf("Installation Target %s renamed. Existing snoozes using old login may become orphaned.", e.GetAccount().GetLogin())
+	if e.Action == nil || *e.Action != "renamed" {
+		return nil
 	}
-	return nil
+	if e.Changes == nil || e.Changes.Login == nil || e.Changes.Login.From == nil {
+		return fmt.Errorf("installation target renamed missing old login identity")
+	}
+	oldLogin := *e.Changes.Login.From
+	newLogin := e.GetAccount().GetLogin()
+	if newLogin == "" {
+		return fmt.Errorf("installation target renamed missing new login identity")
+	}
+	log.Printf("Installation target %s renamed from %s. Updating existing snoozes.", newLogin, oldLogin)
+	return UpdateSnoozesInstallationOwner(a.DB, oldLogin, newLogin, e.Installation.GetID())
 }
 
 type ClientError struct {
@@ -300,8 +330,6 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 	if e.Action == nil || *e.Action != "created" {
 		return nil
 	}
-
-	// Issue 6: Ignore bot-authored comments to avoid self/automation loops
 	if e.Comment.User != nil && e.Comment.User.GetType() == "Bot" {
 		log.Printf("Ignoring bot-authored comment")
 		return nil
@@ -314,10 +342,7 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 	}
 
 	log.Printf("Received snooze command on repo %s for issue %d", e.Repo.GetFullName(), e.Issue.GetNumber())
-
 	if deliveryID == "" {
-		// Delivery ID is strongly required for actual webhooks to preserve idempotency guarantees.
-		log.Printf("Rejecting webhook without delivery ID to preserve idempotency guarantees.")
 		return &ClientError{Err: fmt.Errorf("missing X-GitHub-Delivery header")}
 	}
 
@@ -328,43 +353,31 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 
 	ctx := context.Background()
 	username := e.Sender.GetLogin()
-
-	// App-mode auth failure rejects command without persistence.
 	client, err := a.getClient(installationID)
 	if err != nil {
-		log.Printf("Failed to establish authorization for App mode processing: %v. Command rejected.", err)
-		// We return a 500 error here to prompt GitHub to retry if it's transient
 		return err
 	}
 
-	loc, locErr := GetUserLocation(ctx, client, username)
-	if locErr != nil {
-		log.Printf("Transient error resolving user location for timezone: %v", locErr)
-		return locErr
+	loc, err := GetUserLocation(ctx, client, username)
+	if err != nil {
+		return err
 	}
 
-	now := time.Now()
-	targetTime, err := ParseTargetTime(cmd.DateString, loc, now)
+	targetTime, err := ParseTargetTime(cmd.DateString, loc, time.Now())
 	if err != nil {
-		log.Printf("Failed to parse target time: %v", err)
-		// Return client error since this is bad input
 		return &ClientError{Err: fmt.Errorf("failed to parse target time: %v", err)}
 	}
 
-	// Webhook delivery idempotency with a transaction tied to successful handling.
 	err = a.insertSnoozeIdempotent(deliveryID, e.Repo.Owner.GetLogin(), e.Repo.GetName(), e.Issue.GetNumber(), username, targetTime, installationID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			log.Printf("Ignoring duplicate webhook delivery %s", deliveryID)
 			return nil
-		} else {
-			log.Printf("Failed to insert snooze idempotently: %v", err)
-			return err
 		}
-	} else {
-		log.Printf("Snooze inserted for %s at %v", username, targetTime)
+		return err
 	}
 
+	log.Printf("Snooze inserted for %s at %v", username, targetTime)
 	return nil
 }
 
@@ -377,7 +390,6 @@ func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int
 		_ = tx.Rollback()
 	}()
 
-	// Try inserting the delivery marker first. If this fails, it means we already processed this delivery.
 	_, err = tx.Exec(`INSERT INTO processed_deliveries (delivery_id, processed_at) VALUES (?, ?)`, deliveryID, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("delivery marker failed: %w", err)
@@ -396,7 +408,6 @@ func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int
 		return err
 	}
 
-	// Clean up old deliveries (e.g. older than 7 days) after successful commit
 	go func() {
 		_, _ = a.DB.Exec(`DELETE FROM processed_deliveries WHERE processed_at < ?`, time.Now().Add(-7*24*time.Hour).UTC().Format(time.RFC3339))
 	}()
@@ -406,18 +417,15 @@ func (a *App) insertSnoozeIdempotent(deliveryID, owner, repo string, issueID int
 
 func RunDaemon() {
 	cfg := loadConfig()
-
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	// Initialize GitHub client
 	var client *github.Client
 	if isPATModeConfig(cfg) && !isAppModeConfig(cfg) {
 		client = github.NewClient(nil).WithAuthToken(cfg.GitHubToken)
 	}
 
-	// Initialize Database
 	db, err := InitDB(cfg.DatabaseFile)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -426,15 +434,9 @@ func RunDaemon() {
 		_ = db.Close()
 	}()
 
-	app := &App{
-		Config: cfg,
-		Client: client,
-		DB:     db,
-	}
-
+	app := &App{Config: cfg, Client: client, DB: db}
 	ctx := context.Background()
-	app.StartBackgroundChecker(ctx, 1*time.Minute)
-
+	app.StartBackgroundChecker(ctx, time.Minute)
 	http.HandleFunc("/webhook", app.handleWebhook)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
