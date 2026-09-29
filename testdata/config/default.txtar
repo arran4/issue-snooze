@@ -3,6 +3,8 @@ test: empty env uses defaults
 -- expected.json --
 {
     "GitHubToken": "",
+    "GitHubAppID": 0,
+    "GitHubAppPrivateKeyFile": "",
     "WebhookSecret": "",
     "BotCommand": "@snooze",
     "Port": "8080",

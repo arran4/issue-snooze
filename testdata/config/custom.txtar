@@ -8,6 +8,8 @@ DATABASE_FILE=/data/mydb.sqlite
 -- expected.json --
 {
     "GitHubToken": "test-token",
+    "GitHubAppID": 0,
+    "GitHubAppPrivateKeyFile": "",
     "WebhookSecret": "test-secret",
     "BotCommand": "@bot",
     "Port": "9090",

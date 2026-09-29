@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/issue-snooze/snooze-bot/cmd"
+	"github.com/arran4/issue-snooze/cmd"
 )
 
 var (
@@ -17,8 +17,15 @@ var (
 	date    = "unknown"
 )
 
+// Provenance
+var (
+	GeneratorVersion = "v0.0.30"
+	GeneratedAt      = ""
+	ProjectCommit    = ""
+)
+
 func main() {
-	root, err := NewRoot("snoozebot", version, commit, date)
+	root, err := NewRoot("issue-snooze", version, commit, date)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

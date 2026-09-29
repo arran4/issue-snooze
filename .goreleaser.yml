@@ -1,9 +1,9 @@
 version: 2
-project_name: snooze-bot
+project_name: issue-snooze
 
 builds:
   - id: linux-amd64
-    main: ./cmd/snoozebot
+    main: ./cmd/issue-snooze
     env:
       - CGO_ENABLED=1
     goos:
@@ -11,7 +11,7 @@ builds:
     goarch:
       - amd64
   - id: linux-arm64
-    main: ./cmd/snoozebot
+    main: ./cmd/issue-snooze
     env:
       - CGO_ENABLED=1
       - CC=aarch64-linux-gnu-gcc
@@ -33,10 +33,10 @@ dockers_v2:
 
 nfpms:
   - id: linux-packages
-    package_name: snooze-bot
-    vendor: Your Org
-    homepage: https://github.com/issue-snooze/snooze-bot
-    maintainer: You <you@example.com>
+    package_name: issue-snooze
+    vendor: Arran4
+    homepage: https://github.com/arran4/issue-snooze
+    maintainer: Arran4 <arran4@users.noreply.github.com>
     description: Issue snooze bot
     license: MIT
     formats:

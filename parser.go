@@ -3,6 +3,7 @@ package snoozebot
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -13,6 +14,22 @@ import (
 )
 
 // SnoozeCommand represents a parsed snooze command
+
+// GitHubStatusError preserves an HTTP status so callers can distinguish
+// authentication/permission failures from ordinary retryable failures.
+type GitHubStatusError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *GitHubStatusError) Error() string {
+	return fmt.Sprintf("GitHub API HTTP %d: %v", e.StatusCode, e.Err)
+}
+
+func (e *GitHubStatusError) Unwrap() error {
+	return e.Err
+}
+
 type SnoozeCommand struct {
 	HasCommand bool
 	DateString string
@@ -35,14 +52,25 @@ func ParseCommand(body string, botCommand string) SnoozeCommand {
 }
 
 // GetUserLocation fetches the user's location from GitHub
-func GetUserLocation(ctx context.Context, client *github.Client, username string) *time.Location {
+func GetUserLocation(ctx context.Context, client *github.Client, username string) (*time.Location, error) {
 	if client == nil {
-		return time.UTC
+		return time.UTC, nil
 	}
 
-	user, _, err := client.Users.Get(ctx, username)
-	if err != nil || user.Location == nil || *user.Location == "" {
-		return time.UTC
+	user, resp, err := client.Users.Get(ctx, username)
+	if err != nil {
+		if resp != nil {
+			if resp.StatusCode == 404 {
+				log.Printf("User not found (HTTP 404), falling back to UTC: %v", err)
+				return time.UTC, nil
+			}
+			return nil, &GitHubStatusError{StatusCode: resp.StatusCode, Err: err}
+		}
+		return nil, fmt.Errorf("failed to lookup user location: %w", err)
+	}
+
+	if user.Location == nil || *user.Location == "" {
+		return time.UTC, nil
 	}
 
 	// This is a simplified timezone resolution. A real implementation might need a mapping
@@ -50,11 +78,11 @@ func GetUserLocation(ctx context.Context, client *github.Client, username string
 	// Here we try to parse it as a valid IANA location if possible, otherwise fallback to UTC.
 	loc, err := time.LoadLocation(*user.Location)
 	if err == nil {
-		return loc
+		return loc, nil
 	}
 
 	// Default to UTC if location cannot be parsed directly to a timezone
-	return time.UTC
+	return time.UTC, nil
 }
 
 // ParseTargetTime parses the natural language date string into a time.Time based on location

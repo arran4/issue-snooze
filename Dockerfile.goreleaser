@@ -8,5 +8,5 @@ ENV PORT=8080
 ENV DATABASE_FILE=/data/snooze.db
 
 ARG TARGETPLATFORM
-COPY $TARGETPLATFORM/snooze-bot /usr/local/bin/snooze-bot
-ENTRYPOINT ["/usr/local/bin/snooze-bot"]
+COPY $TARGETPLATFORM/issue-snooze /usr/local/bin/issue-snooze
+ENTRYPOINT ["/usr/local/bin/issue-snooze", "run"]
