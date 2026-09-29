@@ -14,6 +14,22 @@ import (
 )
 
 // SnoozeCommand represents a parsed snooze command
+
+// GitHubStatusError preserves an HTTP status so callers can distinguish
+// authentication/permission failures from ordinary retryable failures.
+type GitHubStatusError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *GitHubStatusError) Error() string {
+	return fmt.Sprintf("GitHub API HTTP %d: %v", e.StatusCode, e.Err)
+}
+
+func (e *GitHubStatusError) Unwrap() error {
+	return e.Err
+}
+
 type SnoozeCommand struct {
 	HasCommand bool
 	DateString string
@@ -45,20 +61,11 @@ func GetUserLocation(ctx context.Context, client *github.Client, username string
 	if err != nil {
 		if resp != nil {
 			if resp.StatusCode == 404 {
-				// User not found/unavailable -> Fallback to UTC
 				log.Printf("User not found (HTTP 404), falling back to UTC: %v", err)
 				return time.UTC, nil
 			}
-			if resp.StatusCode == 401 || resp.StatusCode == 403 {
-				// Auth/permission failure -> Error out so we can retry or address it
-				return nil, fmt.Errorf("auth/permission error getting user location (HTTP %d): %w", resp.StatusCode, err)
-			}
-			if resp.StatusCode == 429 {
-				// Rate limiting -> Retryable error
-				return nil, fmt.Errorf("rate limited getting user location (HTTP 429): %w", err)
-			}
+			return nil, &GitHubStatusError{StatusCode: resp.StatusCode, Err: err}
 		}
-		// General network errors, 5xx etc. are retryable.
 		return nil, fmt.Errorf("failed to lookup user location: %w", err)
 	}
 
