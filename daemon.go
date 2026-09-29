@@ -224,68 +224,111 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
-	// Reconcile App lifecycle
-	if e.Action != nil && (*e.Action == "deleted" || *e.Action == "new_permissions_accepted") {
-		// Just clearing out local scopes and cache if permissions change explicitly
-		a.appTransportMux.Lock()
-		if a.appTransports != nil {
-			delete(a.appTransports, e.Installation.GetID())
-		}
-		a.appTransportMux.Unlock()
+func (a *App) evictInstallationTransport(installationID int64) {
+	if installationID <= 0 {
+		return
 	}
-	if e.Action != nil && *e.Action == "deleted" {
-		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", e.Installation.GetID())
-		err := DeleteSnoozesByInstallation(a.DB, e.Installation.GetID())
-		if err != nil {
-			log.Printf("Failed to delete snoozes for removed installation %d: %v", e.Installation.GetID(), err)
-			return err
+	a.appTransportMux.Lock()
+	defer a.appTransportMux.Unlock()
+	if a.appTransports != nil {
+		delete(a.appTransports, installationID)
+	}
+}
+
+func (a *App) handleInstallationEvent(e *github.InstallationEvent) error {
+	if e.Action == nil || e.Installation == nil {
+		return nil
+	}
+
+	installationID := e.Installation.GetID()
+	switch *e.Action {
+	case "deleted":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d has been deleted. Cleaning up snoozes.", installationID)
+		if err := DeleteSnoozesByInstallation(a.DB, installationID); err != nil {
+			return fmt.Errorf("failed to delete snoozes for removed installation %d: %w", installationID, err)
 		}
-	} else if e.Action != nil && *e.Action == "suspend" {
-		log.Printf("Installation %d has been suspended. Snoozes will remain but will fail and retry until authorization returns.", e.Installation.GetID())
-		// Deliberately doing nothing to preserve snoozes during temporary suspension
-	} else if e.Action != nil && *e.Action == "unsuspend" {
-		log.Printf("Installation %d has been unsuspended. Snoozes will resume processing.", e.Installation.GetID())
+	case "suspend":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d has been suspended. Snoozes are preserved and will retry after authorization returns.", installationID)
+	case "unsuspend", "new_permissions_accepted":
+		a.evictInstallationTransport(installationID)
+		log.Printf("Installation %d authorization changed; cached installation auth was evicted.", installationID)
 	}
 	return nil
 }
 
 func (a *App) handleInstallationRepositoriesEvent(e *github.InstallationRepositoriesEvent) error {
-	if e.Action != nil && *e.Action == "removed" {
-		for _, repo := range e.RepositoriesRemoved {
-			// We restrict the deletion exclusively to the provided Installation ID mapped globally to the specific repo removal.
-			log.Printf("Repository %s removed from installation %d. Cleaning up snoozes.", repo.GetFullName(), e.Installation.GetID())
-			err := DeleteSnoozesByRepoAndInstallation(a.DB, repo.GetFullName(), e.Installation.GetID())
-			if err != nil {
-				log.Printf("Failed to delete snoozes for removed repo %s on installation %d: %v", repo.GetFullName(), e.Installation.GetID(), err)
-				return err
-			}
+	if e.Action == nil || *e.Action != "removed" || e.Installation == nil {
+		return nil
+	}
+	for _, repo := range e.RepositoriesRemoved {
+		log.Printf("Repository %s removed from installation %d. Cleaning up snoozes.", repo.GetFullName(), e.Installation.GetID())
+		if err := DeleteSnoozesByRepoAndInstallation(a.DB, repo.GetFullName(), e.Installation.GetID()); err != nil {
+			return fmt.Errorf("failed to delete snoozes for removed repo %s on installation %d: %w", repo.GetFullName(), e.Installation.GetID(), err)
 		}
 	}
 	return nil
 }
 
 func (a *App) handleRepositoryEvent(e *github.RepositoryEvent) error {
-	if e.Action != nil && (*e.Action == "renamed" || *e.Action == "transferred") {
-		log.Printf("Repository %s was %s. Invalidating all existing snoozes under old owner/name patterns mapped to this repository ID.", e.Repo.GetFullName(), *e.Action)
+	if e.Action == nil || (*e.Action != "renamed" && *e.Action != "transferred") {
+		return nil
+	}
+	if e.Repo == nil || e.Installation == nil || e.Changes == nil {
+		return fmt.Errorf("repository %s missing repository, installation, or changes payload", *e.Action)
+	}
 
-		// Instead of attempting to parse e.Changes mapping exactly from old owner/name (which is fragile in github packages)
-		// we securely lock continuity down by aggressively deleting known mappings matching the NEW repo identity
-		// because we lack native repository ID constraints inside the existing database without migration mapping.
-		// A more complete implementation migrating IDs to database is ideal, but here we enforce security limits first:
-		err := DeleteSnoozesByRepoAndInstallation(a.DB, e.Repo.GetFullName(), e.Installation.GetID())
-		if err != nil {
-			return fmt.Errorf("failed to invalidate snoozes for transferred/renamed repo %s: %w", e.Repo.GetFullName(), err)
+	newOwner := e.Repo.Owner.GetLogin()
+	newName := e.Repo.GetName()
+	oldOwner := newOwner
+	oldName := newName
+
+	if e.Changes.Repo != nil && e.Changes.Repo.Name != nil && e.Changes.Repo.Name.From != nil {
+		oldName = *e.Changes.Repo.Name.From
+	}
+
+	switch *e.Action {
+	case "renamed":
+		if oldName == "" || oldName == newName {
+			return fmt.Errorf("repository renamed missing old repository name")
 		}
+	case "transferred":
+		if e.Changes.Owner == nil || e.Changes.Owner.OwnerInfo == nil {
+			return fmt.Errorf("repository transferred missing old owner identity")
+		}
+		info := e.Changes.Owner.OwnerInfo
+		if info.User != nil {
+			oldOwner = info.User.GetLogin()
+		} else if info.Org != nil {
+			oldOwner = info.Org.GetLogin()
+		}
+		if oldOwner == "" || oldOwner == newOwner {
+			return fmt.Errorf("repository transferred missing old owner identity")
+		}
+	}
+
+	log.Printf("Repository %s was %s. Updating mapped snoozes from %s/%s to %s/%s", e.Repo.GetFullName(), *e.Action, oldOwner, oldName, newOwner, newName)
+	if err := UpdateSnoozesRepoIdentity(a.DB, oldOwner, oldName, newOwner, newName, e.Installation.GetID()); err != nil {
+		return fmt.Errorf("failed to update snoozes for %s repo %s/%s to %s/%s: %w", *e.Action, oldOwner, oldName, newOwner, newName, err)
 	}
 	return nil
 }
 
 func (a *App) handleInstallationTargetEvent(e *github.InstallationTargetEvent) error {
-	if e.Action != nil && *e.Action == "renamed" {
-		log.Printf("Installation Target %s renamed. Existing snoozes using old login may become orphaned.", e.GetAccount().GetLogin())
+	if e.Action == nil || *e.Action != "renamed" {
+		return nil
 	}
-	return nil
+	if e.Installation == nil || e.Account == nil || e.Changes == nil || e.Changes.Login == nil || e.Changes.Login.From == nil {
+		return fmt.Errorf("installation target rename missing old or new account identity")
+	}
+	oldOwner := *e.Changes.Login.From
+	newOwner := e.Account.GetLogin()
+	if oldOwner == "" || newOwner == "" || oldOwner == newOwner {
+		return fmt.Errorf("installation target rename missing old or new account identity")
+	}
+	log.Printf("Installation target %s renamed from %s. Updating existing snoozes.", newOwner, oldOwner)
+	return UpdateSnoozesInstallationOwner(a.DB, oldOwner, newOwner, e.Installation.GetID())
 }
 
 type ClientError struct {
