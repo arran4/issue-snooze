@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v62/github"
 	"github.com/stretchr/testify/assert"
@@ -135,6 +136,33 @@ func TestIssueCommentWebhookDuplicateSurvivesReopen(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM snoozes").Scan(&count))
 	assert.Equal(t, 1, count)
+}
+
+
+func TestIssueCommentWebhookOldDeliveryMarkerStillBlocksReplay(t *testing.T) {
+	const secret = "secret"
+	client, closeServer := testGitHubClient(t, http.StatusOK)
+	defer closeServer()
+
+	db, err := InitDB(filepath.Join(t.TempDir(), "old-replay.db"))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = db.Exec("INSERT INTO processed_deliveries (delivery_id, processed_at) VALUES (?, ?)",
+		"old-delivery", time.Now().Add(-30*24*time.Hour).UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+
+	app := &App{
+		Config: Config{GitHubToken: "pat", WebhookSecret: secret, BotCommand: "@snooze"},
+		Client: client,
+		DB:     db,
+	}
+	rr := httptest.NewRecorder()
+	app.handleWebhook(rr, signedIssueCommentRequest(t, secret, "old-delivery", "created", "@snooze tomorrow", "User"))
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM snoozes").Scan(&count))
+	assert.Zero(t, count, "an old delivery ID must remain replay-protected")
 }
 
 func TestIssueCommentWebhookAppModeMissingInstallation(t *testing.T) {
