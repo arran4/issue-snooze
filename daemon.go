@@ -3,6 +3,7 @@ package snoozebot
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -87,7 +88,8 @@ type App struct {
 	Client *github.Client // Fallback PAT client
 	DB     *sql.DB
 
-	// Cache for GitHub App transports to allow token renewal reuse
+	// Cache one App transport/signer and per-installation token transports.
+	appsTransport   *ghinstallation.AppsTransport
 	appTransports   map[int64]*ghinstallation.Transport
 	appTransportMux sync.Mutex
 }
@@ -138,17 +140,17 @@ func (a *App) getClient(installationID int64) (*github.Client, error) {
 		if a.appTransports == nil {
 			a.appTransports = make(map[int64]*ghinstallation.Transport)
 		}
-
-		itr, ok := a.appTransports[installationID]
-		if !ok {
-			// To fulfill requirements 3, 4, 8:
-			// "To properly fulfill installation-token caching and renewal, we should cache this transport."
-			var err error
+		if a.appsTransport == nil {
 			appsTransport, err := ghinstallation.NewAppsTransportKeyFromFile(http.DefaultTransport, a.Config.GitHubAppID, a.Config.GitHubAppPrivateKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ghinstallation apps transport: %w", err)
 			}
-			itr = ghinstallation.NewFromAppsTransport(appsTransport, installationID)
+			a.appsTransport = appsTransport
+		}
+
+		itr, ok := a.appTransports[installationID]
+		if !ok {
+			itr = ghinstallation.NewFromAppsTransport(a.appsTransport, installationID)
 			a.appTransports[installationID] = itr
 		}
 
@@ -382,7 +384,11 @@ func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string)
 
 	loc, locErr := GetUserLocation(ctx, client, username)
 	if locErr != nil {
-		log.Printf("Transient error resolving user location for timezone: %v", locErr)
+		var statusErr *GitHubStatusError
+		if errors.As(locErr, &statusErr) && (statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusForbidden) {
+			a.evictInstallationTransport(installationID)
+		}
+		log.Printf("Error resolving user location for timezone: %v", locErr)
 		return locErr
 	}
 
