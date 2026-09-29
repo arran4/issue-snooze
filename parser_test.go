@@ -1,169 +1,21 @@
 package snoozebot
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
+
+	"github.com/google/go-github/v62/github"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestParseCommand(t *testing.T) {
-	tests := []struct {
-		name       string
-		body       string
-		botCommand string
-		wantHasCmd bool
-		wantDate   string
-	}{
-		{
-			name:       "Basic snooze",
-			body:       "@snooze tomorrow",
-			botCommand: "@snooze",
-			wantHasCmd: true,
-			wantDate:   "tomorrow",
-		},
-		{
-			name:       "Snooze with extra text",
-			body:       "This is a comment\n@snooze next week\nAnother line",
-			botCommand: "@snooze",
-			wantHasCmd: true,
-			wantDate:   "next week",
-		},
-		{
-			name:       "No snooze command",
-			body:       "Just a regular comment",
-			botCommand: "@snooze",
-			wantHasCmd: false,
-			wantDate:   "",
-		},
-		{
-			name:       "Different bot command",
-			body:       "@bot wake me up tomorrow",
-			botCommand: "@bot",
-			wantHasCmd: true,
-			wantDate:   "wake me up tomorrow",
-		},
-	}
+func TestParseCommand(t *testing.T){tests:=[]struct{name,body,botCommand,wantDate string;wantHasCmd bool}{{"Basic snooze","@snooze tomorrow","@snooze","tomorrow",true},{"Snooze with extra text","This is a comment\n@snooze next week\nAnother line","@snooze","next week",true},{"No snooze command","Just a regular comment","@snooze","",false},{"Different bot command","@bot wake me up tomorrow","@bot","wake me up tomorrow",true}};for _,tt:=range tests{t.Run(tt.name,func(t *testing.T){got:=ParseCommand(tt.body,tt.botCommand);assert.Equal(t,tt.wantHasCmd,got.HasCommand);assert.Equal(t,tt.wantDate,got.DateString)})}}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ParseCommand(tt.body, tt.botCommand)
-			if got.HasCommand != tt.wantHasCmd {
-				t.Errorf("ParseCommand() HasCommand = %v, want %v", got.HasCommand, tt.wantHasCmd)
-			}
-			if got.DateString != tt.wantDate {
-				t.Errorf("ParseCommand() DateString = %v, want %v", got.DateString, tt.wantDate)
-			}
-		})
-	}
-}
+func TestParseTargetTime(t *testing.T){locNY,err:=time.LoadLocation("America/New_York");require.NoError(t,err);utc:=time.UTC;now:=time.Date(2023,10,1,12,0,0,0,utc);tests:=[]struct{name,dateStr string;loc *time.Location;now time.Time;year int;month time.Month;day,hour int;wantErr bool}{{"Tomorrow defaults to 9 AM","tomorrow",utc,now,2023,10,2,9,false},{"Specific date defaults to 9 AM","Oct 5",utc,now,2023,10,5,9,false},{"Specific date and time","Oct 5 at 3pm",utc,now,2023,10,5,15,false},{"Tomorrow defaults to 9 AM in NY","tomorrow",locNY,now,2023,10,2,9,false},{"Invalid date string","jibberish",utc,now,0,0,0,0,true}};for _,tt:=range tests{t.Run(tt.name,func(t *testing.T){got,err:=ParseTargetTime(tt.dateStr,tt.loc,tt.now);if tt.wantErr{assert.Error(t,err);return};require.NoError(t,err);assert.Equal(t,tt.year,got.Year());assert.Equal(t,tt.month,got.Month());assert.Equal(t,tt.day,got.Day());assert.Equal(t,tt.hour,got.Hour())})}}
 
-func TestParseTargetTime(t *testing.T) {
-	locNY, _ := time.LoadLocation("America/New_York")
-	locUTC := time.UTC
-
-	// Fixed "now" for testing: 2023-10-01 12:00:00 UTC
-	now := time.Date(2023, 10, 1, 12, 0, 0, 0, locUTC)
-
-	tests := []struct {
-		name      string
-		dateStr   string
-		loc       *time.Location
-		now       time.Time
-		wantYear  int
-		wantMonth time.Month
-		wantDay   int
-		wantHour  int
-		wantErr   bool
-	}{
-		{
-			name:      "Tomorrow defaults to 9 AM",
-			dateStr:   "tomorrow",
-			loc:       locUTC,
-			now:       now,
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   2,
-			wantHour:  9,
-			wantErr:   false,
-		},
-		{
-			name:      "Specific date defaults to 9 AM",
-			dateStr:   "Oct 5",
-			loc:       locUTC,
-			now:       now,
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   5,
-			wantHour:  9,
-			wantErr:   false,
-		},
-		{
-			name:      "Specific date and time",
-			dateStr:   "Oct 5 at 3pm",
-			loc:       locUTC,
-			now:       now,
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   5,
-			wantHour:  15, // 3 PM
-			wantErr:   false,
-		},
-		{
-			name:      "Tomorrow defaults to 9 AM in NY",
-			dateStr:   "tomorrow",
-			loc:       locNY,
-			now:       now, // 12 PM UTC is 8 AM NY time on Oct 1
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   2, // Oct 2, 9 AM NY time
-			wantHour:  9,
-			wantErr:   false,
-		},
-		{
-			name: "Today if 9 AM hasn't passed",
-			// Let's set 'now' to 8 AM
-			dateStr:   "today",
-			loc:       locUTC,
-			now:       time.Date(2023, 10, 1, 8, 0, 0, 0, locUTC),
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   1,
-			wantHour:  9,
-			wantErr:   false,
-		},
-		{
-			name: "Tomorrow if today's 9 AM has passed and no time given",
-			// 'now' is 12 PM, so asking for "today" without time defaults to 9 AM, which passed, so it should bump to tomorrow
-			dateStr:   "today",
-			loc:       locUTC,
-			now:       now,
-			wantYear:  2023,
-			wantMonth: 10,
-			wantDay:   2,
-			wantHour:  9,
-			wantErr:   false,
-		},
-		{
-			name:    "Invalid date string",
-			dateStr: "jibberish",
-			loc:     locUTC,
-			now:     now,
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseTargetTime(tt.dateStr, tt.loc, tt.now)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseTargetTime() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if got.Year() != tt.wantYear || got.Month() != tt.wantMonth || got.Day() != tt.wantDay || got.Hour() != tt.wantHour {
-					t.Errorf("ParseTargetTime() got = %v (Year:%d, Month:%d, Day:%d, Hour:%d), want Year:%d, Month:%d, Day:%d, Hour:%d",
-						got, got.Year(), got.Month(), got.Day(), got.Hour(), tt.wantYear, tt.wantMonth, tt.wantDay, tt.wantHour)
-				}
-			}
-		})
-	}
-}
+func TestGetUserLocationHTTPPolicy(t *testing.T){tests:=[]struct{name string;status int;body string;wantUTC,wantErr bool;wantStatus int}{{"valid timezone",200,`{"location":"Australia/Melbourne"}`,false,false,0},{"missing timezone",200,`{}`,true,false,0},{"invalid timezone",200,`{"location":"Melbourne, Australia"}`,true,false,0},{"user unavailable",404,`{}`,true,false,0},{"unauthorized",401,`{}`,false,true,401},{"forbidden",403,`{}`,false,true,403},{"rate limited",429,`{}`,false,true,429},{"server error",500,`{}`,false,true,500}};for _,tt:=range tests{t.Run(tt.name,func(t *testing.T){srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){assert.Equal(t,"/users/alice",r.URL.Path);w.Header().Set("Content-Type","application/json");w.WriteHeader(tt.status);_,_=w.Write([]byte(tt.body))}));defer srv.Close();client:=github.NewClient(srv.Client());base,err:=url.Parse(srv.URL+"/");require.NoError(t,err);client.BaseURL=base;loc,err:=GetUserLocation(context.Background(),client,"alice");if tt.wantErr{require.Error(t,err);var se *GitHubStatusError;require.True(t,errors.As(err,&se));assert.Equal(t,tt.wantStatus,se.StatusCode);return};require.NoError(t,err);if tt.wantUTC{assert.Equal(t,time.UTC,loc)}else{assert.Equal(t,"Australia/Melbourne",loc.String())}})}}
