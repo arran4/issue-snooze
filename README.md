@@ -21,7 +21,8 @@ To use `issue-snooze`, you must first register it as a GitHub App on your accoun
    - `Installation`
    - `Installation repositories`
    - `Repository`
-   *(Note: Subscribing to these lifecycle events is required so the daemon knows when it has been uninstalled, suspended, removed, transferred, or renamed allowing it to clean up old reminders safely without leaving orphans).*
+   - `Installation target`
+   *(These lifecycle events let the daemon evict stale installation credentials, remove reminders when repository access is removed, and reconcile repository/account renames and transfers without crossing installation boundaries.)*
 8. Click **Create GitHub App**.
 9. Once created, note your **App ID** near the top of the general settings page.
 10. Scroll down and click **Generate a private key**. A `.pem` file will download to your computer. Store this securely.
@@ -44,20 +45,27 @@ If you suspect your webhook secret or private key `.pem` file has been compromis
 3. Restart the `issue-snooze` container/daemon.
 
 ### Restarting, Upgrades, and Backups
-All pending snoozes are durably stored in an SQLite database (default: `snooze.db`). You can safely restart or upgrade the daemon at any time. When the application boots up, the background checker will immediately process any snoozes whose target times have passed. We strongly recommend routinely backing up your `snooze.db` file.
+Pending snoozes are stored in SQLite (default: `snooze.db`). Keep that file on persistent storage and back it up before upgrades. The background checker runs on its configured interval (the daemon currently starts it with a one-minute interval), so an overdue reminder may wait until the next check after restart rather than being processed immediately.
 
 ### Troubleshooting
 Check the container logs or standard output if snoozes are not triggering. Common problems:
 - `Invalid GitHub App configuration`: Ensure `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, and `WEBHOOK_SECRET` are all populated correctly.
-- `UNIQUE constraint failed`: This is an expected log when GitHub re-delivers an identical webhook payload; the bot correctly ignores these.
+- `Ignoring duplicate webhook delivery`: This is an expected log when GitHub re-delivers an identical webhook payload. Delivery ID tracking ensures comments are only processed once.
+
+### Timezone and retry behaviour
+For relative or timezone-less commands, the daemon looks up the GitHub user's public profile location and treats it as an IANA timezone name. Missing, invalid, or unavailable (404) locations fall back to UTC. Authentication/permission failures (401/403), rate limiting (429), network failures, and 5xx responses are treated as processing errors so GitHub can retry the webhook instead of silently storing a reminder at the wrong time.
+
+Webhook delivery IDs are stored transactionally with new snoozes, so a redelivered webhook does not create a second reminder. Reminder delivery itself is best-effort/at-least-once: if GitHub accepts a reminder comment but the local completion/delete step fails, a later retry can create a duplicate comment because the remote post and SQLite update cannot be atomic.
 
 ### Smoke Tests
-Once installed, create a test issue and a test Pull Request on a repository where the App is active.
-- Leave a comment: `@snooze in 1 minute`
-- Verify the daemon log acknowledges the snooze command.
-- Wait 1 minute.
-- Verify the bot replies tagging your username.
-- Restart the daemon and observe SQLite persistence handling retry.
+Once installed, test both issue and pull-request comments on a repository where the App is active.
+1. Leave `@snooze in 2 minutes` and confirm the daemon logs the command.
+2. Stop the daemon before the reminder becomes due.
+3. Restart it using the same SQLite file.
+4. Wait for the next checker interval and verify exactly one reminder reply is posted.
+5. In the GitHub App's webhook delivery view, choose the original delivery and use **Redeliver**. Confirm the daemon reports the duplicate delivery and does not create a second snooze.
+
+For PAT-mode repository webhooks, use **Repository Settings -> Webhooks -> Recent Deliveries -> Redeliver** instead.
 
 ### Environment Variables
 
@@ -65,7 +73,11 @@ Once installed, create a test issue and a test Pull Request on a repository wher
 |---|---|
 | `GITHUB_APP_ID` | The App ID of your GitHub App. |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | Path to the `.pem` file containing your App's private key. |
-| `WEBHOOK_SECRET` | The webhook secret you configured. (Alternatively: `WEBHOOK_SECRET_FILE`). |
+| `WEBHOOK_SECRET_FILE` | Path to the file containing your webhook secret (preferred over `WEBHOOK_SECRET`). |
+| `WEBHOOK_SECRET` | Inline webhook secret. Ignored when `WEBHOOK_SECRET_FILE` is readable. |
+| `GITHUB_TOKEN_FILE` | Legacy PAT file path. Used only when App mode is not configured. |
+| `GITHUB_TOKEN` | Legacy PAT value. Used only when App mode is not configured. |
+| `BOT_COMMAND` | Custom bot prefix (defaults to `@snooze`). |
 | `DATABASE_FILE` | Path to the SQLite database (defaults to `snooze.db`). |
 | `PORT` | Port to listen on (defaults to `8080`). |
 
@@ -90,20 +102,21 @@ services:
     volumes:
       - ./data:/data
       - ./app-private-key.pem:/run/secrets/github_app_private_key:ro
+      - ./webhook-secret.txt:/run/secrets/webhook_secret:ro
     environment:
       - GITHUB_APP_ID=123456
       - GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github_app_private_key
-      - WEBHOOK_SECRET=your_webhook_secret
+      - WEBHOOK_SECRET_FILE=/run/secrets/webhook_secret
       - DATABASE_FILE=/data/snooze.db
     restart: unless-stopped
 ```
 
-Place your generated `.pem` file in the same directory as `app-private-key.pem`.
+Place your generated `.pem` file at `app-private-key.pem` and put the webhook secret text in `webhook-secret.txt`.
 Run the service in the background:
 ```bash
 docker-compose up -d
 ```
-*(Note: As of writing, there may be no official pre-built image pushed to ghcr.io/arran4/issue-snooze. You can optionally build the container locally by uncommenting the `build` directives.)*
+The release workflow is responsible for publishing `ghcr.io/arran4/issue-snooze` tags. Do not assume `latest` exists before a release has successfully published it; uncomment the local `build` directives when deploying from source.
 
 ### Go Install
 
