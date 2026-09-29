@@ -259,9 +259,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go generate ./...
+          generate=(go run github.com/arran4/go-subcommand/cmd/gosubc generate --force --project-provenance=false --timestamp=false)
+          "${generate[@]}"
           git diff --exit-code
-          go generate ./...
+          "${generate[@]}"
           git diff --exit-code
 
       - name: GoReleaser config check
