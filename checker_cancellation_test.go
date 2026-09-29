@@ -59,10 +59,9 @@ func TestOwnershipLossCancelsInflightReminderRequest(t *testing.T) {
 
 	// Run the production posting method, but speed up the ownership check by
 	// starting a separate production renewal loop with a short interval.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	go func() {
-		result <- app.PostSnoozeReply(ctx, snooze, "worker-1")
+		result <- app.postSnoozeReplyWithRenewInterval(ctx, snooze, "worker-1", 5*time.Millisecond)
 	}()
 
 	select {
@@ -71,19 +70,12 @@ func TestOwnershipLossCancelsInflightReminderRequest(t *testing.T) {
 		t.Fatal("GitHub request did not start")
 	}
 
-	// Replace ownership while the HTTP request is blocked. The normal
-	// PostSnoozeReply renewal interval is two minutes, so drive the same
-	// production renewal function with a short test interval and a context
-	// that cancels the actual post.
-	//
-	// We cannot access PostSnoozeReply's child cancel directly, so verify the
-	// underlying one-shot ownership result here and separately cover the loop's
-	// cancel callback in TestRenewSnoozeClaim.
+	// Replace ownership while the HTTP request is blocked. The short renewal
+	// interval above drives the same production ownership check used in normal
+	// delivery; losing the claim must cancel the request without an external
+	// context cancellation.
 	_, err = db.Exec("UPDATE snoozes SET claim_owner='worker-2' WHERE id=1")
 	require.NoError(t, err)
-	assert.False(t, app.renewSnoozeClaimOnce(1, "worker-1"))
-
-	cancel()
 
 	select {
 	case <-requestCancelled:
