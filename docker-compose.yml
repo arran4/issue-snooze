@@ -8,9 +8,10 @@ services:
     volumes:
       - ./data:/data
       - ./app-private-key.pem:/run/secrets/github_app_private_key:ro
+      - ./webhook-secret.txt:/run/secrets/webhook_secret:ro
     environment:
       - GITHUB_APP_ID=123456
       - GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github_app_private_key
-      - WEBHOOK_SECRET=your_webhook_secret
+      - WEBHOOK_SECRET_FILE=/run/secrets/webhook_secret
       - DATABASE_FILE=/data/snooze.db
     restart: unless-stopped
