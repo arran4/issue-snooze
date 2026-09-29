@@ -4,6 +4,18 @@
 
 The primary deployment model is a **GitHub App**. A legacy PAT mode remains available for development and compatibility.
 
+## Usage examples
+
+On an issue or pull request where the App is installed, create a new comment such as:
+
+```text
+@snooze tomorrow
+@snooze next week
+@snooze Oct 5 at 3pm
+```
+
+Only newly created comments are acted on. The default command prefix is `@snooze`; change it with `BOT_COMMAND`.
+
 ## Register a GitHub App
 
 1. Open <https://github.com/settings/apps/new>.
@@ -20,6 +32,8 @@ The primary deployment model is a **GitHub App**. A legacy PAT mode remains avai
    - **Repository**
 7. Create the App, record its **App ID**, and generate a private key.
 8. Install the App on the repositories it should manage. Selected-repository installations are supported.
+
+A deployment does not need a manually configured installation ID: the daemon takes the installation ID from each webhook and persists it with the reminder. To rotate the private key, generate a replacement key in the App settings, update the mounted PEM file, restart the daemon, verify normal delivery, and then revoke the old key.
 
 The lifecycle subscriptions are used to clean up removed installations/repositories and reconcile repository/account renames and transfers without crossing installation boundaries.
 
@@ -80,6 +94,12 @@ services:
 
 The container entry point runs `issue-snooze run`. Keep `/data` writable and persistent.
 
+### HTTPS reverse proxy
+
+GitHub must be able to reach `/webhook` over HTTPS. Terminate TLS with the reverse proxy or ingress you already operate and forward requests to the daemon's configured `PORT`. Preserve the request body and GitHub signature/delivery headers unchanged; signature verification is performed by the daemon.
+
+Do not expose the private-key or webhook-secret files through the proxy or a public volume.
+
 ## Webhook verification and delivery handling
 
 App mode requires a webhook secret. Invalid or missing signatures are rejected with HTTP 400. A snooze-producing webhook also requires `X-GitHub-Delivery`; the delivery ID is recorded transactionally with the snooze so a redelivery does not create a second reminder.
@@ -127,6 +147,14 @@ If a rename/transfer event does not contain the old identity needed to reconcile
 6. Confirm exactly one normal reminder is posted in the non-failure case and the row is removed afterward.
 
 Also redeliver the original webhook from GitHub and confirm no second snooze row is created for the same delivery ID.
+
+## Troubleshooting
+
+- **Webhook 400:** check the webhook secret, signature headers, delivery ID, and command syntax.
+- **Webhook 500:** inspect daemon logs for App credential/permission, rate-limit, timezone lookup, or database errors. GitHub can then redeliver after the underlying problem is corrected.
+- **Reminder remains pending:** check installation suspension/permissions and whether the App is still installed on the repository. Authorization failures preserve the reminder for retry.
+- **Container cannot start/write:** verify the private-key/secret mounts and that the directory containing `DATABASE_FILE` is writable.
+- **Cross-architecture release problems:** PR CI runs GoReleaser configuration/snapshot checks for linux/amd64 and linux/arm64 before release publishing.
 
 ## Backups and upgrades
 
