@@ -1,125 +1,126 @@
 # issue-snooze
 
-A Go-based GitHub bot daemon that monitors registered repositories for `@snooze <date/time/relative>` comments.
+`issue-snooze` is a Go daemon that watches GitHub issue and pull-request comments for `@snooze <date/time/relative>` and posts a reminder when the snooze expires.
 
-This project operates primarily as a **GitHub App**. It supports multiple installations and repositories without crossing authorization boundaries.
+GitHub App authentication is the primary deployment mode. A legacy Personal Access Token (PAT) mode is retained for development and compatibility, but App mode never falls back to a PAT when App credentials are configured.
 
-## Registration as a GitHub App
+## GitHub App registration
 
-To use `issue-snooze`, you must first register it as a GitHub App on your account or organization.
+Create the App at <https://github.com/settings/apps/new>.
 
-1. Navigate directly to the GitHub App registration page: [https://github.com/settings/apps/new](https://github.com/settings/apps/new).
-2. **App name:** Give your app a unique name (e.g., `My Issue Snoozer`).
-3. **Homepage URL:** The URL of your repository or website.
-4. **Webhook URL:** The HTTPS endpoint where this daemon will be hosted (e.g., `https://bot.example.com/webhook`).
-5. **Webhook Secret:** Generate a strong random string and provide it here. You will need this for the `WEBHOOK_SECRET` configuration. See "Webhook Verification" below.
-6. **Permissions:**
-   - **Issues:** `Read & write` (to read comments and post replies).
-   - **Pull Requests:** `Read & write` (to interact with PR comments).
-7. **Subscribe to events:**
-   - `Issue comment`
-   - `Installation`
-   - `Installation repositories`
-   - `Repository`
-   *(Note: Subscribing to these lifecycle events is required so the daemon knows when it has been uninstalled, suspended, removed, transferred, or renamed allowing it to clean up old reminders safely without leaving orphans).*
-8. Click **Create GitHub App**.
-9. Once created, note your **App ID** near the top of the general settings page.
-10. Scroll down and click **Generate a private key**. A `.pem` file will download to your computer. Store this securely.
-11. Navigate to **Install App** in the left sidebar to install the App on your desired repositories.
+1. Choose an App name and homepage URL.
+2. Set the webhook URL to the public HTTPS endpoint for this daemon, ending in `/webhook`.
+3. Generate a strong webhook secret and keep it out of source control.
+4. Grant **Issues: Read & write** and **Pull requests: Read & write**.
+5. Subscribe to **Issue comment**, **Installation**, **Installation repositories**, **Repository**, and **Installation target**.
+6. Create the App, note its App ID, generate a private key, and install it on the desired repositories. Selected-repository installations are supported.
 
-## Deployment
+The daemon creates an installation-scoped GitHub client from each webhook installation ID. Installation transports and short-lived access tokens are cached only in memory; tokens/JWTs are not persisted in SQLite. Restarting reconstructs authentication from App credentials and the installation IDs stored with pending reminders.
 
-Deploying the bot requires the credentials generated during the registration process.
+## Configuration
 
-## Operational Guidance
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GITHUB_APP_ID` | unset | Numeric GitHub App ID. |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | unset | Path to the App private-key PEM file. |
+| `WEBHOOK_SECRET_FILE` | unset | Preferred path to a file containing the webhook secret. |
+| `WEBHOOK_SECRET` | unset | Webhook secret value when a file is not used. |
+| `GITHUB_TOKEN_FILE` | unset | Legacy PAT file; only used when App mode is not configured. |
+| `GITHUB_TOKEN` | unset | Legacy PAT value; only used when App mode is not configured. |
+| `BOT_COMMAND` | `@snooze` | Comment prefix that starts a snooze command. |
+| `PORT` | `8080` | HTTP listen port. |
+| `DATABASE_FILE` | `snooze.db` | SQLite database path. |
 
-### Webhook Verification & Reverse Proxies
-The daemon must validate the signatures of incoming GitHub Webhooks. Do not disable or omit the `WEBHOOK_SECRET` in App Mode. The bot uses standard GitHub payload signature validation.
-Ensure you expose the bot behind an HTTPS reverse proxy (such as Nginx, Traefik, or Cloudflare Tunnels) mapping port `8080` (or your configured `PORT`) to the internet.
+App mode requires `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, and a webhook secret. Partial App configuration is rejected. If both App and PAT credentials are supplied, App mode is used exclusively.
 
-### Secret and Key Rotation
-If you suspect your webhook secret or private key `.pem` file has been compromised:
-1. Generate a new private key or webhook secret in your GitHub App settings.
-2. Update the environment variables/secret files for your deployment.
-3. Restart the `issue-snooze` container/daemon.
+## Timezones
 
-### Restarting, Upgrades, and Backups
-All pending snoozes are durably stored in an SQLite database (default: `snooze.db`). You can safely restart or upgrade the daemon at any time. When the application boots up, the background checker will immediately process any snoozes whose target times have passed. We strongly recommend routinely backing up your `snooze.db` file.
+For a snooze command, the daemon looks up the comment author's GitHub profile location and treats it as an IANA timezone name when possible.
 
-### Troubleshooting
-Check the container logs or standard output if snoozes are not triggering. Common problems:
-- `Invalid GitHub App configuration`: Ensure `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, and `WEBHOOK_SECRET` are all populated correctly.
-- `UNIQUE constraint failed`: This is an expected log when GitHub re-delivers an identical webhook payload; the bot correctly ignores these.
+- A valid IANA timezone such as `Australia/Melbourne` is used directly.
+- A missing, invalid, or unavailable (`404`) location falls back to UTC.
+- `401`, `403`, `429`, server failures, and network failures do not silently fall back to UTC; the webhook returns a server error so GitHub can retry rather than persisting the wrong time.
+- A date without an explicit time defaults to 09:00 in the resolved timezone.
 
-### Smoke Tests
-Once installed, create a test issue and a test Pull Request on a repository where the App is active.
-- Leave a comment: `@snooze in 1 minute`
-- Verify the daemon log acknowledges the snooze command.
-- Wait 1 minute.
-- Verify the bot replies tagging your username.
-- Restart the daemon and observe SQLite persistence handling retry.
+## Webhook and lifecycle behavior
 
-### Environment Variables
+App-mode webhook signatures are mandatory. Invalid or missing signatures are rejected with HTTP 400. Snooze-creating `issue_comment` deliveries also require `X-GitHub-Delivery`; the delivery ID is recorded transactionally with the snooze so redelivery cannot create a second row. Edited/deleted comments and bot-authored comments are ignored.
 
-| Variable | Description |
-|---|---|
-| `GITHUB_APP_ID` | The App ID of your GitHub App. |
-| `GITHUB_APP_PRIVATE_KEY_FILE` | Path to the `.pem` file containing your App's private key. |
-| `WEBHOOK_SECRET` | The webhook secret you configured. (Alternatively: `WEBHOOK_SECRET_FILE`). |
-| `DATABASE_FILE` | Path to the SQLite database (defaults to `snooze.db`). |
-| `PORT` | Port to listen on (defaults to `8080`). |
+Lifecycle reconciliation is installation-scoped:
 
-*(Note: `GITHUB_TOKEN` is still supported for legacy Personal Access Token deployments, but a GitHub App deployment must not require it.)*
+- **Installation deleted:** cached auth and all pending reminders for that installation are removed.
+- **Installation suspended:** reminders remain queued and cached auth is discarded.
+- **Installation unsuspended / new permissions accepted:** cached auth is discarded so the next request obtains fresh credentials.
+- **Repository removed:** reminders for that repository and installation are removed.
+- **Repository renamed/transferred:** stored owner/name values are updated from the webhook's old identity to the new identity for that installation.
+- **Installation target renamed:** stored repository-owner values are updated for that installation.
+- **Reminder delivery receives `401`/`403`:** the reminder stays queued and that installation's cached transport is evicted.
 
-### Docker Compose
+If a lifecycle payload lacks the old identity needed for safe reconciliation, the handler returns an error rather than silently leaving stale rows.
 
-The recommended way to deploy is using Docker Compose. Create a `docker-compose.yml` file:
+## Reminder delivery guarantee
+
+Pending reminders use an SQLite claim owner plus a renewable lease. A worker that loses ownership or cannot renew cancels its in-flight GitHub request.
+
+Delivery is **at least once / best effort**, not exactly once. Posting the GitHub comment and deleting the SQLite row cannot be atomic. If GitHub accepts the comment but local completion fails, the row remains and a later retry can create a duplicate reminder.
+
+## Docker Compose
+
+Tagged releases are configured to publish `ghcr.io/arran4/issue-snooze`. Do not assume a desired tag exists; check GitHub Packages and build locally when necessary.
 
 ```yaml
-version: '3.8'
-
 services:
   issue-snooze:
-    # If a pre-built image is not published, build it locally with:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.goreleaser
     image: ghcr.io/arran4/issue-snooze:latest
     ports:
       - "8080:8080"
     volumes:
       - ./data:/data
       - ./app-private-key.pem:/run/secrets/github_app_private_key:ro
+      - ./webhook-secret:/run/secrets/webhook_secret:ro
     environment:
-      - GITHUB_APP_ID=123456
-      - GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github_app_private_key
-      - WEBHOOK_SECRET=your_webhook_secret
-      - DATABASE_FILE=/data/snooze.db
+      GITHUB_APP_ID: "123456"
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
+      DATABASE_FILE: /data/snooze.db
     restart: unless-stopped
 ```
 
-Place your generated `.pem` file in the same directory as `app-private-key.pem`.
-Run the service in the background:
-```bash
-docker-compose up -d
-```
-*(Note: As of writing, there may be no official pre-built image pushed to ghcr.io/arran4/issue-snooze. You can optionally build the container locally by uncommenting the `build` directives.)*
+## Native installation
 
-### Go Install
-
-To run the daemon natively without Docker:
+CGO and SQLite support are required because the daemon uses `github.com/mattn/go-sqlite3`.
 
 ```bash
 go install github.com/arran4/issue-snooze/cmd/issue-snooze@latest
 export GITHUB_APP_ID=123456
-export GITHUB_APP_PRIVATE_KEY_FILE=/path/to/key.pem
-export WEBHOOK_SECRET=mysecret
+export GITHUB_APP_PRIVATE_KEY_FILE=/path/to/app-private-key.pem
+export WEBHOOK_SECRET_FILE=/path/to/webhook-secret
+export DATABASE_FILE=/var/lib/issue-snooze/snooze.db
 issue-snooze run
 ```
 
-## Legacy PAT Deployment
+## Persistence, upgrades, backups, and smoke testing
 
-If you are not using a GitHub App, you can configure the bot with a Personal Access Token (PAT).
-1. Generate a fine-grained PAT granting **Issues/Pull Requests (Read/Write)** access for the required repositories.
-2. Manually register a repository webhook on each repository you wish to monitor, subscribing to `Issue comment` events, pointing to your bot's HTTPS endpoint.
-3. Start the daemon using `GITHUB_TOKEN` or `GITHUB_TOKEN_FILE` instead of the App configuration variables.
+Pending reminders and processed webhook delivery IDs are stored in SQLite. Schema migrations run at startup and fail startup if they cannot be applied. The background checker runs once immediately at startup and then once per minute. Back up `DATABASE_FILE` before upgrades using an SQLite-safe backup procedure.
+
+A persistence smoke test should exercise an actual restart:
+
+1. Start with a persistent database path.
+2. Create a reminder due a few minutes in the future and verify it is stored.
+3. Stop the daemon before it is due.
+4. Restart with the same database file.
+5. Verify the reminder is eventually attempted after its due time.
+
+## Inspecting and redelivering webhooks
+
+In the GitHub App settings, open **Advanced / Recent deliveries**. Select a delivery to inspect the request, response status, and body, and use **Redeliver** to retry it. A redelivery of an already-successful snooze command with the same delivery ID should return success without inserting another reminder.
+
+## Legacy PAT mode
+
+For local development or compatibility, create a fine-grained PAT with the repository access and minimum Issues/Pull requests permissions needed to read comments and post reminders, configure an `issue_comment` repository webhook, and start with `GITHUB_TOKEN` or `GITHUB_TOKEN_FILE`. PAT mode is separate from App mode and is not the recommended production deployment path.
+
+## Troubleshooting
+
+- **HTTP 400:** check webhook signature, payload, delivery ID, and snooze syntax.
+- **HTTP 500:** inspect App authentication, permission/rate-limit, GitHub API, and SQLite errors, then redeliver when appropriate.
+- **Repeated failure after permissions change:** check the App installation state and permissions; cached installation auth is evicted on authorization failures and relevant lifecycle events.
