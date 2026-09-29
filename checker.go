@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/google/go-github/v62/github"
@@ -85,31 +86,39 @@ func (a *App) claimSnooze(id int, now time.Time, ownerToken string) (bool, error
 	return rows > 0, nil
 }
 
-func (a *App) renewSnoozeClaim(ctx context.Context, id int, ownerToken string, cancelWork context.CancelFunc) {
-	ticker := time.NewTicker(2 * time.Minute)
+func (a *App) renewSnoozeClaimLoop(ctx context.Context, id int, ownerToken string, cancelWork context.CancelFunc, tickDuration time.Duration) {
+	ticker := time.NewTicker(tickDuration)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Renew lock for another 5 minutes only if we still own it
-			lockedUntil := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
-			res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, lockedUntil, id, ownerToken)
-			if err != nil {
-				log.Printf("Failed to renew claim for snooze ID %d: %v. Cancelling work.", id, err)
+			if !a.renewSnoozeClaimOnce(id, ownerToken) {
 				cancelWork()
 				return
-			} else {
-				rows, _ := res.RowsAffected()
-				if rows == 0 {
-					log.Printf("Failed to renew claim for snooze ID %d: no longer owned by %s", id, ownerToken)
-					cancelWork()
-					return // Stop renewing if we lost ownership
-				}
 			}
 		}
 	}
+}
+
+func (a *App) renewSnoozeClaimOnce(id int, ownerToken string) bool {
+	lockedUntil := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	res, err := a.DB.Exec(`UPDATE snoozes SET locked_until = ? WHERE id = ? AND claim_owner = ?`, lockedUntil, id, ownerToken)
+	if err != nil {
+		log.Printf("Failed to renew claim for snooze ID %d: %v", id, err)
+		return false
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		log.Printf("Failed to inspect renewed claim for snooze ID %d: %v", id, err)
+		return false
+	}
+	if rows == 0 {
+		log.Printf("Failed to renew claim for snooze ID %d: no longer owned by %s", id, ownerToken)
+		return false
+	}
+	return true
 }
 
 func (a *App) releaseSnooze(id int, ownerToken string) error {
@@ -137,7 +146,7 @@ func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerTok
 
 	renewCtx, cancelRenew := context.WithCancel(ctx)
 	defer cancelRenew()
-	go a.renewSnoozeClaim(renewCtx, snooze.ID, ownerToken, cancelWork)
+	go a.renewSnoozeClaimLoop(renewCtx, snooze.ID, ownerToken, cancelWork, 2*time.Minute)
 
 	client, err := a.getClient(snooze.InstallationID)
 	if err != nil {
@@ -152,6 +161,9 @@ func (a *App) PostSnoozeReply(ctx context.Context, snooze SnoozeRecord, ownerTok
 		Body: &body,
 	}
 
-	_, _, err = client.Issues.CreateComment(workCtx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
+	_, resp, err := client.Issues.CreateComment(workCtx, snooze.RepoOwner, snooze.RepoName, snooze.IssueID, comment)
+	if err != nil && resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		a.evictInstallationTransport(snooze.InstallationID)
+	}
 	return err
 }
