@@ -255,9 +255,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go generate ./cmd/...
+          go generate ./cmd
           git diff --exit-code
-          go generate ./cmd/...
+          go generate ./cmd
           git diff --exit-code
       - name: GoReleaser configuration check
         uses: goreleaser/goreleaser-action@v6
