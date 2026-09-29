@@ -175,3 +175,17 @@ func UpdateSnoozesRepoName(db *sql.DB, oldName string, newName string, installat
 	_, err := db.Exec(query, newName, oldName, installationID)
 	return err
 }
+
+// UpdateSnoozesRepoIdentity updates the owner and name of a repository across all its snoozes for an installation.
+func UpdateSnoozesRepoIdentity(db *sql.DB, oldOwner, oldName, newOwner, newName string, installationID int64) error {
+	query := `UPDATE snoozes SET repo_owner = ?, repo_name = ? WHERE repo_owner = ? AND repo_name = ? AND installation_id = ?`
+	_, err := db.Exec(query, newOwner, newName, oldOwner, oldName, installationID)
+	return err
+}
+
+// UpdateSnoozesInstallationOwner updates the repository owner for an entire installation target rename.
+func UpdateSnoozesInstallationOwner(db *sql.DB, oldOwner, newOwner string, installationID int64) error {
+	query := `UPDATE snoozes SET repo_owner = ? WHERE repo_owner = ? AND installation_id = ?`
+	_, err := db.Exec(query, newOwner, oldOwner, installationID)
+	return err
+}
