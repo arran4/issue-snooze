@@ -237,6 +237,50 @@ jobs:
         env:
           CGO_ENABLED: 1
 
+  release-validation:
+    name: Release validation
+    needs: [route, go-test]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+      - name: Verify generated CLI is stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          go generate ./cmd/...
+          git diff --exit-code
+          go generate ./cmd/...
+          git diff --exit-code
+      - name: GoReleaser configuration check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
+      - name: Non-publishing release snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --snapshot --clean --skip=publish,docker
+      - name: Verify snapshot architectures and native CLI startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/metadata.json
+          grep -q 'amd64' dist/metadata.json
+          grep -q 'arm64' dist/metadata.json
+          go build -o /tmp/issue-snooze ./cmd/issue-snooze
+          /tmp/issue-snooze --help >/dev/null
+
   goreleaser:
     name: GoReleaser
     needs: [route, go-test, prepare-release-tag]
