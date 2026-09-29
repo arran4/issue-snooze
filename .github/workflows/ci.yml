@@ -237,6 +237,82 @@ jobs:
         env:
           CGO_ENABLED: 1
 
+
+  pr-release-check:
+    name: PR release/deployment smoke
+    needs: [route, go-test]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Generated CLI is reproducible
+        shell: bash
+        run: |
+          set -euo pipefail
+          go generate ./...
+          git diff --exit-code
+          go generate ./...
+          git diff --exit-code
+
+      - name: GoReleaser config check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
+
+      - name: GoReleaser snapshot packages
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --snapshot --clean --skip=publish,docker
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Explicit amd64 and arm64 build smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /tmp/issue-snooze-amd64 ./cmd/issue-snooze
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -o /tmp/issue-snooze-arm64 ./cmd/issue-snooze
+          /tmp/issue-snooze-amd64 run --help >/dev/null
+
+      - name: Container startup and SQLite restart persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            [[ -n "${cid:-}" ]] && docker rm -f "$cid" >/dev/null 2>&1 || true
+            rm -rf linux .ci-data
+          }
+          trap cleanup EXIT
+
+          mkdir -p linux/amd64 .ci-data
+          cp /tmp/issue-snooze-amd64 linux/amd64/issue-snooze
+          docker build             --platform linux/amd64             --build-arg TARGETPLATFORM=linux/amd64             -f Dockerfile.goreleaser             -t issue-snooze:pr-smoke .
+
+          cid=$(docker run -d             -e GITHUB_TOKEN=ci-placeholder-token             -e DATABASE_FILE=/data/snooze.db             -v "$PWD/.ci-data:/data"             issue-snooze:pr-smoke)
+          sleep 2
+          docker inspect -f '{{.State.Running}}' "$cid" | grep -qx true
+          test -s .ci-data/snooze.db
+          docker rm -f "$cid" >/dev/null
+          cid=""
+
+          cid=$(docker run -d             -e GITHUB_TOKEN=ci-placeholder-token             -e DATABASE_FILE=/data/snooze.db             -v "$PWD/.ci-data:/data"             issue-snooze:pr-smoke)
+          sleep 2
+          docker inspect -f '{{.State.Running}}' "$cid" | grep -qx true
+
   goreleaser:
     name: GoReleaser
     needs: [route, go-test, prepare-release-tag]
