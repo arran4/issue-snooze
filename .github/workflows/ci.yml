@@ -255,14 +255,24 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      - name: Code is properly formatted
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Generated CLI is reproducible
         shell: bash
         run: |
           set -euo pipefail
-          generate=(go run github.com/arran4/go-subcommand/cmd/gosubc generate --force --project-provenance=false --timestamp=false)
-          "${generate[@]}"
+          go generate ./...
           git diff --exit-code
-          "${generate[@]}"
+          go generate ./...
           git diff --exit-code
 
       - name: GoReleaser config check

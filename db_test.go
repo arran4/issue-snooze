@@ -32,7 +32,8 @@ func TestDBMigration(t *testing.T) {
 			issue_id INTEGER NOT NULL,
 			username TEXT NOT NULL,
 			target_time DATETIME NOT NULL
-		);
+		)
+
 		`
 		_, err = db.Exec(query)
 		assert.NoError(t, err)
