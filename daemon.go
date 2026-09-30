@@ -331,6 +331,7 @@ func (a *App) handleInstallationTargetEvent(e *github.InstallationTargetEvent) e
 }
 
 type ClientError struct{ Err error }
+
 func (e *ClientError) Error() string { return e.Err.Error() }
 
 func (a *App) handleIssueComment(e *github.IssueCommentEvent, deliveryID string) error {
