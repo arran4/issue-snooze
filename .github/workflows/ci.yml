@@ -237,23 +237,17 @@ jobs:
         env:
           CGO_ENABLED: 1
 
-
-  pr-release-check:
-    name: PR release/deployment smoke
-    needs: [route, go-test]
-    if: ${{ github.event_name == 'pull_request' }}
+  go-generate:
+    name: Go generate / format
+    needs: [route]
+    if: ${{ needs.route.outputs.run_code_checks == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-      - run: sudo apt-get update && sudo apt-get install -y gcc gcc-aarch64-linux-gnu
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
 
       - name: Code is properly formatted
         shell: bash
@@ -274,6 +268,24 @@ jobs:
           git diff --exit-code
           go generate ./...
           git diff --exit-code
+
+
+  pr-release-check:
+    name: PR release/deployment smoke
+    needs: [route, go-test]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: GoReleaser config check
         uses: goreleaser/goreleaser-action@v6
